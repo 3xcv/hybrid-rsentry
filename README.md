@@ -10,7 +10,7 @@
 [![Celery](https://img.shields.io/badge/Celery-5.x-37814A?style=flat-square)](https://docs.celeryq.dev)
 [![Redis](https://img.shields.io/badge/Redis-7.x-DC382D?style=flat-square&logo=redis)](https://redis.io)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?style=flat-square&logo=postgresql)](https://postgresql.org)
-[![Wiki](https://img.shields.io/badge/docs-wiki-blueviolet?style=flat-square)](https://github.com/Mohhudib/hybrid-rsentry/wiki)
+[![Docs](https://img.shields.io/badge/docs-context-blueviolet?style=flat-square)](docs/context/README.md)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 </div>
@@ -267,15 +267,14 @@ AI analyst classifies threat → publishes result to dashboard
 
 ## Documentation
 
-Full project documentation is available in the [GitHub Wiki](https://github.com/Mohhudib/hybrid-rsentry/wiki), covering:
+Project documentation lives in [`docs/context/`](docs/context/README.md):
 
-- [Architecture deep-dive](https://github.com/Mohhudib/hybrid-rsentry/wiki/Architecture)
-- [Detection Engine internals](https://github.com/Mohhudib/hybrid-rsentry/wiki/Detection-Engine)
-- [Auto-Containment pipeline](https://github.com/Mohhudib/hybrid-rsentry/wiki/Auto-Containment)
-- [AI Threat Analyst](https://github.com/Mohhudib/hybrid-rsentry/wiki/AI-Threat-Analyst)
-- [Installation & Setup](https://github.com/Mohhudib/hybrid-rsentry/wiki/Installation-and-Setup)
-- [API Reference](https://github.com/Mohhudib/hybrid-rsentry/wiki/API-Reference)
-- [Known Issues & Fixes](https://github.com/Mohhudib/hybrid-rsentry/wiki/Known-Issues-and-Fixes)
+- [Project Architecture](docs/context/project_architecture.md) — stack, data flow, DB tables, alert logic, file map
+- [Startup Guide](docs/context/startup_guide.md) — correct startup commands, diagnostics, hard rules
+- [Session 01 — Initial Setup](docs/context/session_01_initial_setup.md) — 9 Kali environment problems and fixes
+- [Session 02 — Security Audit](docs/context/session_02_security_audit.md) — vulnerabilities found and fixed
+- [Session 03 — Documentation](docs/context/session_03_documentation.md) — CONTRIBUTING, CLAUDE.md
+- [Session 04 — Full Code Review](docs/context/session_04_full_review.md) — 6 bugs found and fixed
 
 ---
 
