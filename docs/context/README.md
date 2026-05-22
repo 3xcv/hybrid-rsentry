@@ -10,6 +10,7 @@ This folder documents everything that was built, fixed, and decided during the d
 | [session_02_security_audit.md](session_02_security_audit.md) | 2026-05-12 | Security audit — 3 real vulnerabilities fixed, CVEs removed |
 | [session_03_documentation.md](session_03_documentation.md) | 2026-05-12 | CONTRIBUTING guide, README security section, CLAUDE.md created |
 | [session_04_full_review.md](session_04_full_review.md) | 2026-05-22 | Full code review — 6 logic/config bugs found and fixed |
+| [session_05_github_cleanup.md](session_05_github_cleanup.md) | 2026-05-22 | GitHub audit — broken LICENSE fixed, dead wiki links removed, 9 PRs closed |
 
 ## Project Reference
 
