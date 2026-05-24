@@ -2,7 +2,7 @@
 ai_analyst.py — NVIDIA AI analysis for suspicious events and alerts.
 
 Two separate API keys:
-  NVIDIA_API_KEY        — used for live event analysis (AI Analyst section)
+  GROQ_API_KEY — used for live event analysis (AI Analyst section)
   NVIDIA_API_KEY_ALERTS — used for on-demand alert analysis (Alerts section)
 
 Each key has its own Redis rate limit key so they don't block each other.
@@ -18,8 +18,10 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "meta/llama-3.1-70b-instruct"
+GROQ_BASE_URL   = "https://api.groq.com/openai/v1"
+GROQ_MODEL      = "llama-3.3-70b-versatile"
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL    = "meta/llama-3.1-70b-instruct"
 _RATE_DELAY = 3.0  # seconds between calls per key
 
 # Rate limit Redis keys — one per API key so they're fully independent
@@ -61,20 +63,30 @@ def _get_redis():
 def _get_client_events():
     global _client_events
     if _client_events is None:
-        key = os.getenv("NVIDIA_API_KEY", "")
+        key = os.getenv("AI_API_KEY", os.getenv("NVIDIA_API_KEY", ""))
         if not key:
-            raise RuntimeError("NVIDIA_API_KEY not set in environment")
-        _client_events = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            raise RuntimeError("AI_API_KEY not set in environment")
+        if key.startswith("gsk_"):
+            _client_events = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=key)
+            _client_events._model = "llama-3.3-70b-versatile"
+        else:
+            _client_events = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            _client_events._model = MODEL_NAME
     return _client_events
 
 
 def _get_client_alerts():
     global _client_alerts
     if _client_alerts is None:
-        key = os.getenv("NVIDIA_API_KEY_ALERTS", os.getenv("NVIDIA_API_KEY", ""))
+        key = os.getenv("AI_API_KEY_ALERTS", os.getenv("NVIDIA_API_KEY_ALERTS", ""))
         if not key:
-            raise RuntimeError("NVIDIA_API_KEY_ALERTS not set in environment")
-        _client_alerts = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            raise RuntimeError("AI_API_KEY_ALERTS not set in environment")
+        if key.startswith("gsk_"):
+            _client_alerts = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=key)
+            _client_alerts._model = "llama-3.3-70b-versatile"
+        else:
+            _client_alerts = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            _client_alerts._model = MODEL_NAME
     return _client_alerts
 
 
@@ -145,9 +157,10 @@ def build_prompt(event: dict) -> str:
 
 
 def _call_nvidia(client, prompt: str) -> dict:
-    """Shared NVIDIA API call. Returns parsed JSON dict."""
+    """Shared API call — supports Groq and NVIDIA. Returns parsed JSON dict."""
+    model = getattr(client, '_model', MODEL_NAME)
     response = client.chat.completions.create(
-        model=MODEL_NAME,
+        model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
