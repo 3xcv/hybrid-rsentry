@@ -14,7 +14,7 @@ import re
 import time
 
 import redis as redis_lib
-from openai import OpenAI
+from openai import OpenAI, AuthenticationError, RateLimitError, APIConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def _get_client_events():
             _client_events._model = "llama-3.3-70b-versatile"
         else:
             _client_events = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
-            _client_events._model = MODEL_NAME
+            _client_events._model = NVIDIA_MODEL
     return _client_events
 
 
@@ -86,7 +86,7 @@ def _get_client_alerts():
             _client_alerts._model = "llama-3.3-70b-versatile"
         else:
             _client_alerts = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
-            _client_alerts._model = MODEL_NAME
+            _client_alerts._model = NVIDIA_MODEL
     return _client_alerts
 
 
@@ -158,7 +158,7 @@ def build_prompt(event: dict) -> str:
 
 def _call_nvidia(client, prompt: str) -> dict:
     """Shared API call — supports Groq and NVIDIA. Returns parsed JSON dict."""
-    model = getattr(client, '_model', MODEL_NAME)
+    model = getattr(client, '_model', NVIDIA_MODEL)
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -171,8 +171,13 @@ def _call_nvidia(client, prompt: str) -> dict:
     text = response.choices[0].message.content.strip()
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
-        return json.loads(match.group())
-    return json.loads(text)
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            logger.warning("AI returned invalid JSON: %s", text[:200])
+            raise
+    logger.warning("AI response has no JSON block: %s", text[:200])
+    raise json.JSONDecodeError("No JSON found in AI response", text, 0)
 
 
 def analyze_event(event: dict) -> dict:
@@ -185,9 +190,21 @@ def analyze_event(event: dict) -> dict:
         _rate_limit(_RATE_KEY_EVENTS)
         result = _call_nvidia(_get_client_events(), build_prompt(event))
         return result
+    except AuthenticationError:
+        logger.error("Event API key invalid or expired — check AI_API_KEY")
+        return {"analysis_failed": True, "reason": "API key invalid or expired", "error_type": "AUTH_ERROR"}
+    except RateLimitError:
+        logger.warning("Event API rate limit reached — will retry later")
+        return {"analysis_failed": True, "reason": "Rate limit reached", "error_type": "RATE_LIMIT"}
+    except APIConnectionError:
+        logger.warning("Event API connection failed — check network or API URL")
+        return {"analysis_failed": True, "reason": "Connection failed", "error_type": "CONNECTION_ERROR"}
+    except json.JSONDecodeError:
+        logger.warning("Event API returned invalid JSON")
+        return {"analysis_failed": True, "reason": "Invalid response from AI", "error_type": "JSON_ERROR"}
     except Exception as exc:
-        logger.warning("NVIDIA event analysis failed: %s", exc)
-        return {"analysis_failed": True, "reason": str(exc)[:120]}
+        logger.warning("Event analysis failed: %s", exc)
+        return {"analysis_failed": True, "reason": str(exc)[:120], "error_type": "UNKNOWN"}
 
 
 def analyze_alert(event: dict) -> dict:
@@ -200,9 +217,21 @@ def analyze_alert(event: dict) -> dict:
         _rate_limit(_RATE_KEY_ALERTS)
         result = _call_nvidia(_get_client_alerts(), build_prompt(event))
         return result
+    except AuthenticationError:
+        logger.error("Alert API key invalid or expired — check AI_API_KEY_ALERTS")
+        return {"analysis_failed": True, "reason": "API key invalid or expired", "error_type": "AUTH_ERROR"}
+    except RateLimitError:
+        logger.warning("Alert API rate limit reached — will retry later")
+        return {"analysis_failed": True, "reason": "Rate limit reached", "error_type": "RATE_LIMIT"}
+    except APIConnectionError:
+        logger.warning("Alert API connection failed — check network or API URL")
+        return {"analysis_failed": True, "reason": "Connection failed", "error_type": "CONNECTION_ERROR"}
+    except json.JSONDecodeError:
+        logger.warning("Alert API returned invalid JSON")
+        return {"analysis_failed": True, "reason": "Invalid response from AI", "error_type": "JSON_ERROR"}
     except Exception as exc:
-        logger.warning("NVIDIA alert analysis failed: %s", exc)
-        return {"analysis_failed": True, "reason": str(exc)[:120]}
+        logger.warning("Alert analysis failed: %s", exc)
+        return {"analysis_failed": True, "reason": str(exc)[:120], "error_type": "UNKNOWN"}
 
 
 def _build_health_prompt(recent_events: list[dict]) -> str:
