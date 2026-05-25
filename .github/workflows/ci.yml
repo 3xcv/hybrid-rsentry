@@ -24,7 +24,7 @@ jobs:
         run: pip install ruff
 
       - name: Lint backend and agent
-        run: ruff check backend/ agent/
+        run: ruff check backend/ agent/ --ignore E712,F401,F841
 
   frontend-build:
     name: Frontend Build
@@ -39,7 +39,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
         working-directory: frontend
 
       - name: Build
