@@ -120,3 +120,5 @@ async def release_host(host_id: str, db: AsyncSession = Depends(get_db)):
     host.is_contained = False
     await db.commit()
     return {"status": "released", "host_id": host_id}
+
+def broken_function(
