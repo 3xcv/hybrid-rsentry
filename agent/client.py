@@ -1,5 +1,5 @@
 """
-this_is_not_valid_python_F821 = undefined_variable_xyz
+def (this_is_a_syntax_error):
 client.py — REST client that sends agent events to the Hybrid R-Sentry backend.
 """
 import logging
