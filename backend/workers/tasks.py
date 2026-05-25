@@ -12,7 +12,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
-from backend.models.schemas import Alert, Event, Host, Severity
+from backend.models.schemas import Alert, Host, Severity
 from backend.services import ai_analyst
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,7 @@ def update_host_risk(host_id: str):
         async with SessionLocal() as db:
             result = await db.execute(
                 select(Alert.severity, func.count(Alert.id))
-                .where(Alert.host_id == host_id, Alert.acknowledged == False)
+                .where(Alert.host_id == host_id, Alert.acknowledged == False)  # noqa: E712
                 .group_by(Alert.severity)
             )
             rows = result.all()
@@ -226,7 +226,7 @@ async def _ack_alert_by_id(alert_id: str):
         result = await db.execute(
             select(Alert).where(
                 Alert.id == uuid.UUID(alert_id),
-                Alert.acknowledged == False,
+                Alert.acknowledged == False,  # noqa: E712
             )
         )
         alert = result.scalar_one_or_none()
@@ -268,7 +268,7 @@ def auto_ack_containment(host_id: str):
                 select(Alert).where(
                     Alert.host_id == host_id,
                     Alert.severity == Severity.CRITICAL,
-                    Alert.acknowledged == False,
+                    Alert.acknowledged == False,  # noqa: E712
                 )
             )
             alerts = result.scalars().all()
@@ -304,7 +304,7 @@ def auto_ack_by_event(event_id: str):
             result = await db.execute(
                 select(Alert).where(
                     Alert.event_id == uuid.UUID(event_id),
-                    Alert.acknowledged == False,
+                    Alert.acknowledged == False,  # noqa: E712
                 )
             )
             alert = result.scalar_one_or_none()
