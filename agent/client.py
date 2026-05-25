@@ -1,5 +1,4 @@
 """
-def (this_is_a_syntax_error):
 client.py — REST client that sends agent events to the Hybrid R-Sentry backend.
 """
 import logging
@@ -186,3 +185,5 @@ class AgentClient:
 
     def __exit__(self, *args):
         self.close()
+
+x = (  # unclosed paren — E999 SyntaxError
