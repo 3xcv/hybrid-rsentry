@@ -119,8 +119,12 @@ async def analyze_alert(alert_id: uuid.UUID, db: AsyncSession = Depends(get_db))
                 "details": ev.details or {},
             }
 
+    # Pass event_id so the AI Analyst panel can match the result to the pending event
+    if alert.event_id:
+        event_data["event_id"] = str(alert.event_id)
+
     from backend.workers.tasks import analyze_alert_ai
-    analyze_alert_ai.delay(str(alert.event_id or alert_id), event_data)
+    analyze_alert_ai.delay(str(alert_id), event_data)
     return {"queued": True, "alert_id": str(alert_id)}
 
 
@@ -170,6 +174,18 @@ async def forensic_export(alert_id: uuid.UUID, db: AsyncSession = Depends(get_db
     )
     evidence_list = evidence_result.scalars().all()
 
+    # جيب الـ AI analysis من Redis لو موجود
+    from backend.services.ai_analyst import _get_redis
+    ai_analysis = None
+    try:
+        r = _get_redis()
+        ai_data = r.get(f"rsentry:ai_analysis:{alert.event_id}")
+        if ai_data:
+            import json as _json
+            ai_analysis = _json.loads(ai_data)
+    except Exception:
+        pass
+
     return {
         "alert": {
             "id": str(alert.id),
@@ -180,6 +196,7 @@ async def forensic_export(alert_id: uuid.UUID, db: AsyncSession = Depends(get_db
             "created_at": alert.created_at.isoformat(),
             "resolved_at": alert.resolved_at.isoformat() if alert.resolved_at else None,
         },
+        "ai_analysis": ai_analysis,
         "evidence": [
             {
                 "id": str(e.id),

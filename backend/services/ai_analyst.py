@@ -2,7 +2,7 @@
 ai_analyst.py — NVIDIA AI analysis for suspicious events and alerts.
 
 Two separate API keys:
-  NVIDIA_API_KEY        — used for live event analysis (AI Analyst section)
+  GROQ_API_KEY — used for live event analysis (AI Analyst section)
   NVIDIA_API_KEY_ALERTS — used for on-demand alert analysis (Alerts section)
 
 Each key has its own Redis rate limit key so they don't block each other.
@@ -14,21 +14,29 @@ import re
 import time
 
 import redis as redis_lib
-from openai import OpenAI
+from openai import OpenAI, AuthenticationError, RateLimitError, APIConnectionError
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "meta/llama-3.1-70b-instruct"
-NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-_RATE_DELAY = 3.0  # seconds between calls per key
+GROQ_BASE_URL   = "https://api.groq.com/openai/v1"
+GROQ_MODEL      = "llama-3.3-70b-versatile"
+NVIDIA_BASE_URL   = "https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL      = "meta/llama-3.1-70b-instruct"
+CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
+CEREBRAS_MODEL    = "llama-3.3-70b"
+GROQ_RATE_DELAY     = 0.5  # سريع
+CEREBRAS_RATE_DELAY = 0.5  # الأسرع
+NVIDIA_RATE_DELAY   = 3.0  # أبطأ
 
-# Rate limit Redis keys — one per API key so they're fully independent
-_RATE_KEY_EVENTS = "rsentry:nvidia_last_call_events"
-_RATE_KEY_ALERTS = "rsentry:nvidia_last_call_alerts"
+# Rate limit Redis keys — one per provider
+_RATE_KEY_GROQ     = "rsentry:groq_last_call"
+_RATE_KEY_NVIDIA   = "rsentry:nvidia_last_call"
+_RATE_KEY_CEREBRAS = "rsentry:cerebras_last_call"
 
-_client_events = None   # for live event analysis
-_client_alerts = None   # for alert analysis
-_redis = None
+_client_events   = None   # for live event analysis
+_client_alerts   = None   # for alert analysis
+_client_cerebras = None   # fallback provider
+_redis           = None
 
 # Lua script for atomic check-and-claim of a rate limit slot.
 # Returns '0' if the slot was claimed, or the remaining wait seconds as a string.
@@ -61,55 +69,106 @@ def _get_redis():
 def _get_client_events():
     global _client_events
     if _client_events is None:
-        key = os.getenv("NVIDIA_API_KEY", "")
+        key = os.getenv("AI_API_KEY", os.getenv("NVIDIA_API_KEY", ""))
         if not key:
-            raise RuntimeError("NVIDIA_API_KEY not set in environment")
-        _client_events = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            raise RuntimeError("AI_API_KEY not set in environment")
+        if key.startswith("gsk_"):
+            _client_events = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=key)
+            _client_events._model = "llama-3.3-70b-versatile"
+        else:
+            _client_events = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            _client_events._model = NVIDIA_MODEL
     return _client_events
+
+
+def _reset_client_events():
+    global _client_events
+    _client_events = None
+    logger.warning("Event client cache cleared — will reload key on next call")
 
 
 def _get_client_alerts():
     global _client_alerts
     if _client_alerts is None:
-        key = os.getenv("NVIDIA_API_KEY_ALERTS", os.getenv("NVIDIA_API_KEY", ""))
+        key = os.getenv("AI_API_KEY_ALERTS", os.getenv("NVIDIA_API_KEY_ALERTS", ""))
         if not key:
-            raise RuntimeError("NVIDIA_API_KEY_ALERTS not set in environment")
-        _client_alerts = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            raise RuntimeError("AI_API_KEY_ALERTS not set in environment")
+        if key.startswith("gsk_"):
+            _client_alerts = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=key)
+            _client_alerts._model = "llama-3.3-70b-versatile"
+        else:
+            _client_alerts = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            _client_alerts._model = NVIDIA_MODEL
     return _client_alerts
 
 
-def _rate_limit(redis_key: str):
-    """Block until a rate limit slot is atomically claimed for this key.
+def _reset_client_alerts():
+    global _client_alerts
+    _client_alerts = None
+    logger.warning("Alert client cache cleared — will reload key on next call")
 
-    Uses a Lua script so the check-and-set is atomic — two concurrent Celery
-    workers cannot both pass simultaneously.
-    """
+
+def _get_client_cerebras():
+    global _client_cerebras
+    if _client_cerebras is None:
+        key = os.getenv("AI_API_KEY_CEREBRAS", "")
+        if not key:
+            raise RuntimeError("AI_API_KEY_CEREBRAS not set in environment")
+        _client_cerebras = OpenAI(base_url=CEREBRAS_BASE_URL, api_key=key)
+        _client_cerebras._model = CEREBRAS_MODEL
+    return _client_cerebras
+
+
+def _call_with_fallback(clients: list, prompt: str) -> dict:
+    """يجرب كل client بالترتيب، لو فشل يروح للثاني."""
+    last_exc = None
+    for i, client in enumerate(clients):
+        try:
+            return _call_nvidia(client, prompt)
+        except AuthenticationError as e:
+            # AUTH_ERROR = مشكلة في الـ key، نوقف فوراً ما نكمل
+            logger.error("Client %d auth failed — invalid key, stopping fallback", i + 1)
+            raise
+        except RateLimitError as e:
+            logger.warning("Client %d rate limited, trying next", i + 1)
+            last_exc = e
+            time.sleep(1)  # انتظر قليل قبل الـ client الثاني
+        except APIConnectionError as e:
+            logger.warning("Client %d connection failed, trying next", i + 1)
+            last_exc = e
+        except json.JSONDecodeError as e:
+            logger.warning("Client %d returned invalid JSON, trying next", i + 1)
+            last_exc = e
+        except Exception as e:
+            logger.warning("Client %d failed: %s, trying next", i + 1, e)
+            last_exc = e
+    raise last_exc or RuntimeError("All clients failed")
+
+
+def _rate_limit(redis_key: str, delay: float = NVIDIA_RATE_DELAY):
+    """Block until a rate limit slot is atomically claimed for this key."""
     r = _get_redis()
     script = r.register_script(_RATE_LIMIT_LUA)
     while True:
-        wait_str = script(keys=[redis_key], args=[str(_RATE_DELAY), str(time.time())])
+        wait_str = script(keys=[redis_key], args=[str(delay), str(time.time())])
         wait = float(wait_str)
         if wait <= 0:
             break
-        logger.debug("NVIDIA rate limit (%s): waiting %.1fs", redis_key, wait)
+        logger.debug("Rate limit (%s): waiting %.1fs", redis_key, wait)
         time.sleep(wait)
 
 
 SYSTEM_PROMPT = """You are a cybersecurity AI analyst embedded in a ransomware detection system called Hybrid R-Sentry.
 You receive detection events from a monitored Linux endpoint and must analyze them.
 
-Respond ONLY with valid JSON in this exact format:
-{
-  "threat_type": "string (e.g. Ransomware, Cryptominer, Rootkit, Fileless Malware, Benign, Unknown)",
-  "technique": "string (e.g. File Encryption, Canary File Access, Entropy Manipulation, Process Injection)",
-  "language_or_tool": "string (e.g. Python, Bash, C binary, unknown)",
-  "behavior_summary": "string (1-2 sentences plain English explaining what happened)",
-  "risk_level": "CRITICAL | HIGH | MEDIUM | LOW",
-  "recommendation": "string (1 sentence — what the analyst should do next)",
-  "confidence": "HIGH | MEDIUM | LOW"
-}
+CRITICAL RULES:
+1. Respond ONLY with a single valid JSON object — no markdown, no code blocks, no explanation.
+2. Never add text before or after the JSON.
+3. Every field is required — never omit any field.
+4. Use ONLY the exact values listed for enum fields.
 
-Be concise. Never add text outside the JSON block."""
+Respond in this exact format:
+{"threat_type":"Ransomware|Cryptominer|Rootkit|Fileless Malware|Benign|Unknown","technique":"string","language_or_tool":"string","behavior_summary":"1-2 sentences explaining what happened","risk_level":"CRITICAL|HIGH|MEDIUM|LOW","recommendation":"1 sentence on what to do next","confidence":"HIGH|MEDIUM|LOW"}"""
 
 
 def build_prompt(event: dict) -> str:
@@ -145,21 +204,27 @@ def build_prompt(event: dict) -> str:
 
 
 def _call_nvidia(client, prompt: str) -> dict:
-    """Shared NVIDIA API call. Returns parsed JSON dict."""
+    """Shared API call — supports Groq and NVIDIA. Returns parsed JSON dict."""
+    model = getattr(client, '_model', NVIDIA_MODEL)
     response = client.chat.completions.create(
-        model=MODEL_NAME,
+        model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.1,
-        max_tokens=500,
+        temperature=0.0,
+        max_tokens=250,
     )
     text = response.choices[0].message.content.strip()
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
-        return json.loads(match.group())
-    return json.loads(text)
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            logger.warning("AI returned invalid JSON: %s", text[:200])
+            raise
+    logger.warning("AI response has no JSON block: %s", text[:200])
+    raise json.JSONDecodeError("No JSON found in AI response", text, 0)
 
 
 def analyze_event(event: dict) -> dict:
@@ -169,12 +234,27 @@ def analyze_event(event: dict) -> dict:
     Returns {"analysis_failed": True} on error — caller must not publish that.
     """
     try:
-        _rate_limit(_RATE_KEY_EVENTS)
-        result = _call_nvidia(_get_client_events(), build_prompt(event))
+        _rate_limit(_RATE_KEY_CEREBRAS, CEREBRAS_RATE_DELAY)
+        result = _call_with_fallback(
+            [_get_client_cerebras(), _get_client_events(), _get_client_alerts()],
+            build_prompt(event)
+        )
         return result
+    except AuthenticationError:
+        logger.error("Event API key invalid or expired — check AI_API_KEY")
+        return {"analysis_failed": True, "reason": "API key invalid or expired", "error_type": "AUTH_ERROR"}
+    except RateLimitError:
+        logger.warning("Event API rate limit reached — will retry later")
+        return {"analysis_failed": True, "reason": "Rate limit reached", "error_type": "RATE_LIMIT"}
+    except APIConnectionError:
+        logger.warning("Event API connection failed — check network or API URL")
+        return {"analysis_failed": True, "reason": "Connection failed", "error_type": "CONNECTION_ERROR"}
+    except json.JSONDecodeError:
+        logger.warning("Event API returned invalid JSON")
+        return {"analysis_failed": True, "reason": "Invalid response from AI", "error_type": "JSON_ERROR"}
     except Exception as exc:
-        logger.warning("NVIDIA event analysis failed: %s", exc)
-        return {"analysis_failed": True, "reason": str(exc)[:120]}
+        logger.warning("Event analysis failed: %s", exc)
+        return {"analysis_failed": True, "reason": str(exc)[:120], "error_type": "UNKNOWN"}
 
 
 def analyze_alert(event: dict) -> dict:
@@ -184,12 +264,27 @@ def analyze_alert(event: dict) -> dict:
     Returns {"analysis_failed": True} on error — caller must not publish that.
     """
     try:
-        _rate_limit(_RATE_KEY_ALERTS)
-        result = _call_nvidia(_get_client_alerts(), build_prompt(event))
+        _rate_limit(_RATE_KEY_CEREBRAS, CEREBRAS_RATE_DELAY)
+        result = _call_with_fallback(
+            [_get_client_cerebras(), _get_client_alerts(), _get_client_events()],
+            build_prompt(event)
+        )
         return result
+    except AuthenticationError:
+        logger.error("Alert API key invalid or expired — check AI_API_KEY_ALERTS")
+        return {"analysis_failed": True, "reason": "API key invalid or expired", "error_type": "AUTH_ERROR"}
+    except RateLimitError:
+        logger.warning("Alert API rate limit reached — will retry later")
+        return {"analysis_failed": True, "reason": "Rate limit reached", "error_type": "RATE_LIMIT"}
+    except APIConnectionError:
+        logger.warning("Alert API connection failed — check network or API URL")
+        return {"analysis_failed": True, "reason": "Connection failed", "error_type": "CONNECTION_ERROR"}
+    except json.JSONDecodeError:
+        logger.warning("Alert API returned invalid JSON")
+        return {"analysis_failed": True, "reason": "Invalid response from AI", "error_type": "JSON_ERROR"}
     except Exception as exc:
-        logger.warning("NVIDIA alert analysis failed: %s", exc)
-        return {"analysis_failed": True, "reason": str(exc)[:120]}
+        logger.warning("Alert analysis failed: %s", exc)
+        return {"analysis_failed": True, "reason": str(exc)[:120], "error_type": "UNKNOWN"}
 
 
 def _build_health_prompt(recent_events: list[dict]) -> str:
@@ -202,24 +297,40 @@ def _build_health_prompt(recent_events: list[dict]) -> str:
     critical_count = severities.count("CRITICAL")
     high_count = severities.count("HIGH")
 
+    if not recent_events:
+        return '''{"status":"STABLE","threat_type":"None","behavior_summary":"No recent events to analyze.","risk_level":"LOW","recommendation":"Continue monitoring.","confidence":"LOW"}''' 
+
+    # أعلى entropy delta
+    max_entropy = max((e.get("entropy_delta", 0) for e in recent_events), default=0)
+
+    # أكثر process مشبوه
+    process_counts: dict = {}
+    for e in recent_events:
+        p = e.get("process_name", "unknown")
+        process_counts[p] = process_counts.get(p, 0) + 1
+    top_process = max(process_counts, key=process_counts.get) if process_counts else "unknown"
+
+    # أكثر file path مستهدف
+    path_counts: dict = {}
+    for e in recent_events:
+        p = e.get("file_path") or "none"
+        path_counts[p] = path_counts.get(p, 0) + 1
+    top_path = max(path_counts, key=path_counts.get) if path_counts else "none"
+
     return f"""Analyze the overall system health based on recent activity:
 
 Total events (last period): {len(recent_events)}
 Event type breakdown: {json.dumps(counts)}
 CRITICAL events: {critical_count}
 HIGH events: {high_count}
-Canary hits: {sum(1 for e in recent_events if e.get('canary_hit'))}
-Avg entropy delta: {sum(e.get('entropy_delta', 0) for e in recent_events) / max(len(recent_events), 1):.2f}
+Canary hits: {sum(1 for e in recent_events if e.get("canary_hit"))}
+Avg entropy delta: {sum(e.get("entropy_delta", 0) for e in recent_events) / max(len(recent_events), 1):.2f}
+Max entropy delta: {max_entropy:.2f}
+Most active process: {top_process} ({process_counts.get(top_process, 0)} events)
+Most targeted path: {top_path}
 
-Respond with JSON:
-{{
-  "status": "STABLE | UNDER_ATTACK | ANOMALOUS | RECOVERING",
-  "threat_type": "string",
-  "behavior_summary": "2-3 sentences describing overall system state",
-  "risk_level": "CRITICAL | HIGH | MEDIUM | LOW",
-  "recommendation": "string",
-  "confidence": "HIGH | MEDIUM | LOW"
-}}"""
+Respond ONLY with this JSON, no extra text:
+{{"status":"STABLE|UNDER_ATTACK|ANOMALOUS|RECOVERING","threat_type":"string","behavior_summary":"2-3 sentences describing overall system state","risk_level":"CRITICAL|HIGH|MEDIUM|LOW","recommendation":"string","confidence":"HIGH|MEDIUM|LOW"}}"""
 
 
 def analyze_system_health(recent_events: list[dict]) -> dict:
@@ -228,16 +339,64 @@ def analyze_system_health(recent_events: list[dict]) -> dict:
     Rate-limited on the same key as live events.
     """
     try:
-        _rate_limit(_RATE_KEY_EVENTS)
-        result = _call_nvidia(_get_client_events(), _build_health_prompt(recent_events))
+        _rate_limit(_RATE_KEY_CEREBRAS, CEREBRAS_RATE_DELAY)
+        result = _call_with_fallback(
+            [_get_client_cerebras(), _get_client_events(), _get_client_alerts()],
+            _build_health_prompt(recent_events)
+        )
         return result
+    except AuthenticationError:
+        logger.error("Health API key invalid or expired — check AI_API_KEY")
+        return {
+            "status": "UNKNOWN",
+            "threat_type": "—",
+            "behavior_summary": "Health analysis unavailable: API key invalid or expired.",
+            "risk_level": "UNKNOWN",
+            "recommendation": "Check AI_API_KEY configuration.",
+            "confidence": "LOW",
+            "error_type": "AUTH_ERROR",
+        }
+    except RateLimitError:
+        logger.warning("Health API rate limit reached")
+        return {
+            "status": "UNKNOWN",
+            "threat_type": "—",
+            "behavior_summary": "Health analysis unavailable: Rate limit reached.",
+            "risk_level": "UNKNOWN",
+            "recommendation": "Wait and retry.",
+            "confidence": "LOW",
+            "error_type": "RATE_LIMIT",
+        }
+    except APIConnectionError:
+        logger.warning("Health API connection failed")
+        return {
+            "status": "UNKNOWN",
+            "threat_type": "—",
+            "behavior_summary": "Health analysis unavailable: Connection failed.",
+            "risk_level": "UNKNOWN",
+            "recommendation": "Check network and API URL.",
+            "confidence": "LOW",
+            "error_type": "CONNECTION_ERROR",
+        }
+    except json.JSONDecodeError:
+        logger.warning("Health API returned invalid JSON")
+        return {
+            "status": "UNKNOWN",
+            "threat_type": "—",
+            "behavior_summary": "Health analysis unavailable: Invalid response from AI.",
+            "risk_level": "UNKNOWN",
+            "recommendation": "Retry the request.",
+            "confidence": "LOW",
+            "error_type": "JSON_ERROR",
+        }
     except Exception as exc:
-        logger.warning("NVIDIA health analysis failed: %s", exc)
+        logger.warning("Health analysis failed: %s", exc)
         return {
             "status": "UNKNOWN",
             "threat_type": "—",
             "behavior_summary": f"Health analysis unavailable: {str(exc)[:80]}",
             "risk_level": "UNKNOWN",
-            "recommendation": "Check NVIDIA_API_KEY configuration.",
+            "recommendation": "Check API configuration.",
             "confidence": "LOW",
+            "error_type": "UNKNOWN",
         }

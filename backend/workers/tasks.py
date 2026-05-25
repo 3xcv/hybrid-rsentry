@@ -144,10 +144,31 @@ def update_host_risk(host_id: str):
 
 @celery_app.task(name="analyze_event_ai")
 def analyze_event_ai(event_id: str, event_data: dict):
-    result = ai_analyst.analyze_event(event_data)
     r = _redis()
+
+    # publish فوري للـ dashboard قبل ما ننتظر الـ AI
     r.publish("rsentry:ai", json.dumps({
         "type": "ai_analysis",
+        "event_id": event_id,
+        "threat_type": "Analyzing...",
+        "technique": "—",
+        "language_or_tool": "—",
+        "behavior_summary": "AI analysis in progress...",
+        "risk_level": "PENDING",
+        "recommendation": "Please wait for AI analysis to complete.",
+        "confidence": "—",
+    }))
+
+    # بعدين نحلل بالخلفية
+    result = ai_analyst.analyze_event(event_data)
+
+    # نخزن الـ AI analysis في Redis عشان الـ forensic export يلاقيه
+    r.set(f"rsentry:ai_analysis:{event_data.get('event_id', event_id)}", 
+          json.dumps(result), ex=86400)  # تنتهي بعد 24 ساعة
+
+    # نبعث النتيجة الحقيقية لما تجهز
+    r.publish("rsentry:ai", json.dumps({
+        "type": "ai_analysis_update",
         "event_id": event_id,
         **result,
     }))
@@ -161,13 +182,36 @@ def analyze_event_ai(event_id: str, event_data: dict):
 
 @celery_app.task(name="analyze_alert_ai")
 def analyze_alert_ai(alert_id: str, event_data: dict):
-    result = ai_analyst.analyze_alert(event_data)
     r = _redis()
-    r.publish("rsentry:ai", json.dumps({
+
+    # publish فوري قبل ما ننتظر الـ AI
+    pending_payload = {
         "type": "ai_analysis",
         "alert_id": alert_id,
+        "threat_type": "Analyzing...",
+        "technique": "—",
+        "language_or_tool": "—",
+        "behavior_summary": "AI analysis in progress...",
+        "risk_level": "PENDING",
+        "recommendation": "Please wait for AI analysis to complete.",
+        "confidence": "—",
+    }
+    if event_data.get("event_id"):
+        pending_payload["event_id"] = event_data["event_id"]
+    r.publish("rsentry:ai", json.dumps(pending_payload))
+
+    # بعدين نحلل بالخلفية
+    result = ai_analyst.analyze_alert(event_data)
+
+    # نبعث النتيجة الحقيقية
+    payload = {
+        "type": "ai_analysis_update",
+        "alert_id": alert_id,
         **result,
-    }))
+    }
+    if event_data.get("event_id"):
+        payload["event_id"] = event_data["event_id"]
+    r.publish("rsentry:ai", json.dumps(payload))
 
     if result.get("analysis_failed"):
         return

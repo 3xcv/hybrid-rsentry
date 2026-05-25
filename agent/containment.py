@@ -21,25 +21,32 @@ EVIDENCE_BASE = Path("/tmp/rsentry_evidence")
 
 class ContainmentResult:
     def __init__(self, pid: int):
-        self.pid = pid
-        self.stopped = False
-        self.evidence_dir: Optional[Path] = None
+        self.pid = pid                              # root PID
+        self.descendants: list[int] = []            # descendant PIDs found at containment
+        self.stopped = False                        # True if root SIGSTOP succeeded
+        self.stopped_descendants: list[int] = []    # which descendants got SIGSTOP
+        self.evidence_dir: Optional[Path] = None    # root dir; descendants in subdirs/
         self.evidence_files: list[str] = []
         self.iptables_rule: Optional[str] = None
-        self.killed = False
+        self.killed = False                         # True if root SIGKILL succeeded
+        self.killed_descendants: list[int] = []     # which descendants got SIGKILL
         self.error: Optional[str] = None
         self.timestamp = datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> dict:
         return {
             "pid": self.pid,
+            "descendants": self.descendants,
             "stopped": self.stopped,
+            "stopped_descendants": self.stopped_descendants,
             "evidence_dir": str(self.evidence_dir) if self.evidence_dir else None,
             "evidence_files": self.evidence_files,
             "iptables_rule": self.iptables_rule,
             "killed": self.killed,
+            "killed_descendants": self.killed_descendants,
             "error": self.error,
             "timestamp": self.timestamp,
+            "tree_size": 1 + len(self.descendants),
         }
 
 
@@ -60,13 +67,49 @@ def _sigstop(pid: int) -> bool:
         return False
 
 
+def _get_descendants(pid: int) -> list[int]:
+    """Return all descendant PIDs (children, grandchildren, ...) of a process."""
+    try:
+        proc = psutil.Process(pid)
+        return [child.pid for child in proc.children(recursive=True)]
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return []
+
+
+def _freeze_tree(root_pid: int) -> tuple[bool, list[int], list[int]]:
+    """
+    SIGSTOP root then all descendants. Two-sweep to catch races where
+    grandchildren spawn during first enumeration.
+
+    Returns: (root_stopped, all_descendants_pids, descendants_actually_stopped)
+    """
+    # Stop root FIRST so it can't spawn new children during enumeration
+    root_stopped = _sigstop(root_pid)
+    descendants = _get_descendants(root_pid)
+    stopped_descendants: list[int] = []
+    for cpid in descendants:
+        if _sigstop(cpid):
+            stopped_descendants.append(cpid)
+    # Second sweep — grandchildren may have spawned during first sweep
+    second_sweep = _get_descendants(root_pid)
+    new_pids = [p for p in second_sweep if p not in descendants]
+    for cpid in new_pids:
+        if _sigstop(cpid):
+            stopped_descendants.append(cpid)
+    descendants = sorted(set(descendants + new_pids))
+    return root_stopped, descendants, stopped_descendants
+
+
 # ---------------------------------------------------------------------------
 # Step 2 — Evidence capture from /proc/PID/
 # ---------------------------------------------------------------------------
 
-def _capture_evidence(pid: int) -> tuple[Optional[Path], list[str]]:
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    evidence_dir = EVIDENCE_BASE / f"pid_{pid}_{ts}"
+def _capture_evidence(pid: int, output_dir: Optional[Path] = None) -> tuple[Optional[Path], list[str]]:
+    if output_dir is None:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        evidence_dir = EVIDENCE_BASE / f"pid_{pid}_{ts}"
+    else:
+        evidence_dir = output_dir
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
     captured: list[str] = []
@@ -186,47 +229,68 @@ def _sigkill(pid: int) -> bool:
         return False
 
 
+def _kill_tree(root_pid: int, descendants: list[int]) -> tuple[bool, list[int]]:
+    """SIGKILL descendants first (bottom-up), then root — so parents reap children."""
+    killed_descendants: list[int] = []
+    for cpid in descendants:
+        if _sigkill(cpid):
+            killed_descendants.append(cpid)
+    root_killed = _sigkill(root_pid)
+    return root_killed, killed_descendants
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def contain(pid: int, skip_iptables: bool = False) -> ContainmentResult:
     """
-    Execute the full containment pipeline:
-    1. SIGSTOP  → freeze the process
-    2. Evidence → copy /proc artifacts
-    3. iptables → network DROP (root required)
-    4. SIGKILL  → terminate
+    Tree-aware containment pipeline (handles ransomware fork-workers):
+      1. SIGSTOP root then all descendants (two-sweep race protection)
+      2. Evidence — /proc artifacts for root + each descendant
+      3. iptables --uid-owner DROP — covers whole tree (root required)
+      4. SIGKILL descendants bottom-up, then root
 
-    Returns ContainmentResult with full audit trail.
+    Returns ContainmentResult with full audit trail including tree info.
     """
     result = ContainmentResult(pid)
-    logger.warning("=== CONTAINMENT INITIATED for PID %d ===", pid)
+    logger.warning("=== CONTAINMENT INITIATED for PID %d (tree-aware) ===", pid)
 
-    # 1. SIGSTOP
-    result.stopped = _sigstop(pid)
-    if not result.stopped:
-        result.error = "SIGSTOP failed"
-        # Still try evidence capture
+    # 1. SIGSTOP the entire tree
+    result.stopped, result.descendants, result.stopped_descendants = _freeze_tree(pid)
+    if not result.stopped and not result.stopped_descendants:
+        result.error = "SIGSTOP failed for entire tree"
     else:
-        time.sleep(0.05)  # give OS time to freeze the process
+        time.sleep(0.05)
+        logger.warning(
+            "Tree frozen: root_stopped=%s descendants_found=%d descendants_stopped=%d",
+            result.stopped, len(result.descendants), len(result.stopped_descendants),
+        )
 
-    # 2. Evidence capture
-    result.evidence_dir, result.evidence_files = _capture_evidence(pid)
+    # 2. Evidence — root in main dir, descendants in subdirs
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    main_dir = EVIDENCE_BASE / f"pid_{pid}_{ts}"
+    result.evidence_dir, result.evidence_files = _capture_evidence(pid, main_dir)
+    if result.descendants:
+        descendants_root = main_dir / "descendants"
+        for cpid in result.descendants:
+            child_dir = descendants_root / f"pid_{cpid}"
+            _, child_files = _capture_evidence(cpid, child_dir)
+            result.evidence_files.extend(child_files)
 
-    # 3. iptables DROP
+    # 3. iptables DROP — uid-based, naturally covers the whole tree
     if not skip_iptables and os.geteuid() == 0:
         result.iptables_rule = _iptables_drop(pid)
-    else:
-        if os.geteuid() != 0:
-            logger.warning("Not root — skipping iptables DROP")
+    elif os.geteuid() != 0:
+        logger.warning("Not root — skipping iptables DROP")
 
-    # 4. SIGKILL
-    result.killed = _sigkill(pid)
+    # 4. SIGKILL the entire tree (descendants first)
+    result.killed, result.killed_descendants = _kill_tree(pid, result.descendants)
 
     logger.warning(
-        "=== CONTAINMENT COMPLETE PID %d | stopped=%s killed=%s evidence=%s ===",
-        pid, result.stopped, result.killed, result.evidence_dir,
+        "=== CONTAINMENT COMPLETE PID %d | tree_size=%d root_killed=%s descendants_killed=%d ===",
+        pid, 1 + len(result.descendants),
+        result.killed, len(result.killed_descendants),
     )
     return result
 

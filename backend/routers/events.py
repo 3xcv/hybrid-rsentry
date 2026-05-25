@@ -20,6 +20,9 @@ from backend.workers.tasks import (
     analyze_event_ai, auto_ack_containment, publish_markov_analysis,
 )
 
+AUTO_CONTAIN_THRESHOLD_LINEAGE = 70.0  # lineage score عشان يعمل auto contain
+AUTO_CONTAIN_ENTROPY = 3.5             # entropy delta عشان يعمل auto contain
+
 router = APIRouter(prefix="/api/events", tags=["events"])
 
 ALERT_SEVERITIES = {Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM}
@@ -44,10 +47,11 @@ async def ingest_event(payload: EventCreate, db: AsyncSession = Depends(get_db))
 
     # Detect internal Markov chain events before creating alerts
     sub_type = (payload.details or {}).get("sub_type", "")
-    is_internal = (
-        sub_type == "MARKOV_REPOSITION" or
-        (sub_type == "moved" and payload.pid == 0)
-    )
+    # Internal = Markov repositioner output فقط.
+    # ملاحظة: شُلّ الشرط (sub_type=="moved" and pid==0) لأنه كان bug —
+    # canary on_moved بستخدم نفس sub_type والـ pid دائماً 0، فكان بتم
+    # تصنيفه internal والـ alert ما يصير.
+    is_internal = sub_type == "MARKOV_REPOSITION"
 
     event = Event(
         host_id=payload.host_id,
@@ -85,6 +89,34 @@ async def ingest_event(payload: EventCreate, db: AsyncSession = Depends(get_db))
         payload.severity.value, payload.file_path, payload.entropy_delta,
         payload.canary_hit, payload.process_name, payload.details,
     )
+
+    # Auto containment — لو CRITICAL وفيه canary hit أو lineage عالي
+    # RANSOMWARE_RENAME/CREATED events بطلعوا من monitor.py بـ pid=0 +
+    # lineage_score=0 + entropy_delta=0، فما بطابقوا secondary conditions
+    # العادية — لازم نضيفهم explicit عشان auto-containment يشتغل
+    is_extension_change = sub_type in ("RANSOMWARE_RENAME", "RANSOMWARE_CREATED")
+
+    should_contain = (
+        payload.severity == Severity.CRITICAL
+        and not is_internal
+        and (
+            payload.canary_hit
+            or payload.lineage_score >= AUTO_CONTAIN_THRESHOLD_LINEAGE
+            or payload.entropy_delta >= AUTO_CONTAIN_ENTROPY
+            or is_extension_change
+        )
+    )
+
+    if should_contain:
+        result = await db.execute(select(Host).where(Host.host_id == payload.host_id))
+        host = result.scalar_one_or_none()
+        if host and not host.is_contained:
+            host.is_contained = True
+            await db.commit()
+            push_alert_ws.delay(
+                str(alert.id) if alert else "auto",
+                payload.host_id, "CRITICAL", "AUTO_CONTAINMENT"
+            )
 
     if alert:
         push_alert_ws.delay(str(alert.id), payload.host_id,
