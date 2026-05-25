@@ -172,3 +172,5 @@ class EntropyEngine:
     def flush(self, path: str) -> None:
         """Remove a file's history (e.g. after containment)."""
         self._records.pop(path, None)
+
+def broken(
