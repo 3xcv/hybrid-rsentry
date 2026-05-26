@@ -113,7 +113,7 @@ def _get_client_cerebras():
     if _client_cerebras is None:
         key = os.getenv("AI_API_KEY_CEREBRAS", "")
         if not key:
-            raise RuntimeError("AI_API_KEY_CEREBRAS not set in environment")
+            return None  # Cerebras is optional — skip if key not configured
         _client_cerebras = OpenAI(base_url=CEREBRAS_BASE_URL, api_key=key)
         _client_cerebras._model = CEREBRAS_MODEL
     return _client_cerebras
@@ -123,6 +123,8 @@ def _call_with_fallback(clients: list, prompt: str) -> dict:
     """يجرب كل client بالترتيب، لو فشل يروح للثاني."""
     last_exc = None
     for i, client in enumerate(clients):
+        if client is None:
+            continue  # provider not configured — skip silently
         try:
             return _call_nvidia(client, prompt)
         except AuthenticationError:
