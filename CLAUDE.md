@@ -15,7 +15,7 @@ A multi-process Python + React application with five processes that must all be 
 | FastAPI backend (`uvicorn`) | REST API + WebSocket server on port 8000 |
 | Celery worker | Async tasks: AI analysis, WebSocket push, risk scoring |
 | Agent (`agent.monitor`) | Watchdog that monitors files, detects threats, fires containment |
-| React frontend (`npm start`) | Dashboard on port 3000 |
+| React frontend (`npm start`) | Dashboard on port 3000 (Vite dev server) |
 
 ---
 
@@ -67,10 +67,15 @@ agent/adaptive.py                — Markov chain repositioner; _is_safe_target(
 agent/lineage.py                 — Process ancestry scorer + dpkg hash verification (416K hashes)
 agent/exceptions.py              — Whitelist: browsers, package managers, system paths; smart /tmp filter
 agent/client.py                  — HTTP client that posts events to /api/events
-frontend/src/App.jsx             — Root app; WebSocket state and AI state live here
+frontend/src/App.jsx             — Root app; WebSocket state and AI state live here; handles ai_analysis + ai_analysis_update
+frontend/src/index.jsx           — Entry point (note: .jsx not .js — Vite production build requires this)
+frontend/index.html              — Vite root HTML (at project root, NOT in public/)
+frontend/vite.config.js          — Vite config: React plugin + proxy (/api, /ws → localhost:8000)
+frontend/postcss.config.js       — Tailwind + autoprefixer config for Vite
 frontend/src/pages/AIAnalystPage.jsx
 frontend/src/pages/AlertsPage.jsx
 frontend/src/pages/HostsPage.jsx
+frontend/src/pages/FilesystemPage.jsx
 frontend/src/pages/ReportsPage.jsx   — PDF forensic export with date/severity filter + host overview table
 ```
 
@@ -111,6 +116,26 @@ Groq keys are also accepted in place of NVIDIA keys — auto-detected by the `gs
 5. **Always activate the venv before pip commands:** `source venv/bin/activate`
 6. **Never run `npm audit fix --force`** on the frontend without checking what it intends to install.
 7. **Do not suggest adding authentication middleware** without understanding the full async SQLAlchemy dependency chain — this has broken the app before.
+
+---
+
+## Frontend stack (as of 2026-05-30)
+
+The dashboard was migrated from Create React App to **Vite** (PR #33) and upgraded to **React 19** (PR #34).
+
+| Package | Version | Note |
+|---|---|---|
+| react / react-dom | 19.2.0 | |
+| vite | 5.x | replaces react-scripts entirely |
+| @vitejs/plugin-react | 4.x | |
+| tailwindcss | 3.x | configured via postcss.config.js |
+| date-fns | 4.x | |
+| lucide-react | 1.x | |
+| recharts | 2.12.x | React 19 compatible |
+
+`npm run build` produces output in `frontend/dist/` (not `build/`).
+`npm start` maps to `vite` (dev server on port 3000 with proxy to backend).
+Node.js 22 is used in CI (`deploy-landing.yml`) and Docker (`Dockerfile.frontend`).
 
 ---
 
