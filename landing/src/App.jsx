@@ -1,6 +1,5 @@
 import { lazy, Suspense } from 'react';
 import Navbar       from './components/layout/Navbar';
-import Footer       from './components/layout/Footer';
 import AnimatedGrid from './components/common/AnimatedGrid';
 import ScanLines    from './components/common/ScanLines';
 import Hero         from './components/sections/Hero';
@@ -75,7 +74,6 @@ export default function App() {
         <FinalCTA />
       </Suspense>
 
-      <Footer />
     </div>
   );
 }
