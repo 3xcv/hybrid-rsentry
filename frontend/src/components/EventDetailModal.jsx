@@ -1,5 +1,5 @@
 import React from 'react';
-import FileSystemTree from './FileSystemTree';
+import FileSystemGraph from './FileSystemGraph';
 
 const MITRE = {
   CANARY_TOUCHED:        [{ id: 'T1485', name: 'Data Destruction',               tac: 'Impact' }],
@@ -164,8 +164,8 @@ export default function EventDetailModal({ event, onClose }) {
                   {event.file_path}
                 </span>
               </div>
-              <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', background: 'var(--bg)', height: 220 }}>
-                <FileSystemTree highlightPath={event.file_path} compact />
+              <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', background: 'var(--bg)', height: 240 }}>
+                <FileSystemGraph highlightPath={event.file_path} />
               </div>
             </div>
           )}

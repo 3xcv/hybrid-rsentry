@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { acknowledgeAlert, analyzeAlert, containHost, getAlertEvidence } from '../api/client';
-import FileSystemTree from './FileSystemTree';
+import FileSystemGraph from './FileSystemGraph';
 
 const RULE_NAME = {
   CANARY_TOUCHED:        'Canary File Modified by Untrusted Process',
@@ -206,11 +206,9 @@ export default function DetailFlyout({ alert, liveEvent, onClose, onRefresh }) {
           <div
             style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', background: 'var(--bg)', height: fsExpanded ? 480 : 240, transition: 'height 0.2s' }}
           >
-            <FileSystemTree
+            <FileSystemGraph
               newEvent={liveEvent}
-              connected={true}
               highlightPath={filePath}
-              compact
             />
           </div>
           <button
