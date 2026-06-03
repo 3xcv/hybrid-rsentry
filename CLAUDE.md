@@ -14,7 +14,7 @@ A multi-process Python + React application with five processes that must all be 
 | Docker (Postgres + Redis) | Database and message broker |
 | FastAPI backend (`uvicorn`) | REST API + WebSocket server on port 8000 |
 | Celery worker | Async tasks: AI analysis, WebSocket push, risk scoring |
-| Agent (`agent.monitor`) | Watchdog that monitors files, detects threats, fires containment |
+| Agent (`agent.monitor` or `agent.monitor_ebpf`) | Watchdog that monitors files, detects threats, fires containment |
 | React frontend (`npm start`) | Dashboard on port 3000 (Vite dev server) |
 
 ---
@@ -59,24 +59,55 @@ backend/routers/hosts.py         — Host inventory, contain/release endpoints, 
 backend/routers/ws.py            — WebSocket; subscribes to 3 Redis channels
 backend/workers/tasks.py         — All Celery tasks; reads .env directly via _env() — no dotenv
 backend/services/ai_analyst.py   — Multi-provider AI: Cerebras → NVIDIA/Groq fallback chain
-agent/monitor.py                 — Main watchdog; _validate_watch_path() exits if WATCH_PATH is inside a git repo
+
+agent/monitor.py                 — Main watchdog (inotify backend); _validate_watch_path() exits if WATCH_PATH inside git repo
+agent/monitor_ebpf.py            — eBPF sensor (NEW — Phase 3); TRACEPOINT_PROBE for rename syscalls; velocity burst detection;
+                                    ransomware family profiling (LockBit5/Akira/ESXi); kernel 6.19+, BCC 0.35 compat
 agent/graph.py                   — FilesystemGraph: BFS directory walk + canary placement + cleanup
 agent/entropy.py                 — Shannon entropy engine; memory-capped at 5000 files, 65KB partial reads
-agent/containment.py             — Tree-aware SIGSTOP → evidence capture → iptables DROP → SIGKILL
+agent/containment.py             — Tree-aware SIGSTOP → evidence capture → iptables DROP → SIGKILL; PID resolved from /proc
 agent/adaptive.py                — Markov chain repositioner; _is_safe_target() blocks .git/ and system dirs
 agent/lineage.py                 — Process ancestry scorer + dpkg hash verification (416K hashes)
 agent/exceptions.py              — Whitelist: browsers, package managers, system paths; smart /tmp filter
 agent/client.py                  — HTTP client that posts events to /api/events
-frontend/src/App.jsx             — Root app; WebSocket state and AI state live here; handles ai_analysis + ai_analysis_update
-frontend/src/index.jsx           — Entry point (note: .jsx not .js — Vite production build requires this)
-frontend/index.html              — Vite root HTML (at project root, NOT in public/)
-frontend/vite.config.js          — Vite config: React plugin + proxy (/api, /ws → localhost:8000)
+
+simulations/sim_common.py        — Shared simulation engine (Profile, populate_corpus, run_attack, backup/restore)
+simulations/sim_akira.py         — Akira intermittent encryption simulation
+simulations/sim_qilin.py         — Qilin percent-encryption simulation
+simulations/sim_lockbit.py       — LockBit 5.0 two-pass 16-char-ext simulation
+tests/test_lockbit.py            — 4-metric evaluation (files<3, latency<500ms, FP=0%, coverage=100%) — ALL TARGETS MET
+
+frontend/src/App.jsx             — Root app; TopBar + StatusBar layout; WebSocket + AI state; passes liveEvent to AlertsPage
+frontend/src/index.jsx           — Entry point (.jsx required by Vite production build)
+frontend/index.html              — Vite root HTML; IBM Plex Sans/Mono fonts + Font Awesome 6.5.1
+frontend/vite.config.js          — Vite config: React plugin + proxy (/api, /ws → localhost:8000) + process.env shim
 frontend/postcss.config.js       — Tailwind + autoprefixer config for Vite
-frontend/src/pages/AIAnalystPage.jsx
-frontend/src/pages/AlertsPage.jsx
+frontend/src/index.css           — CSS variable design system (--bg, --panel, --crit, --accent…) + SIEM utility classes
+
+frontend/src/components/TopBar.jsx          — Horizontal nav bar (replaces Sidebar); 6 tabs + alert count badge
+frontend/src/components/StatusBar.jsx       — Bottom status bar: agents, EPS, WS status, last refreshed, cluster
+frontend/src/components/FacetRail.jsx       — Left filter panel on Alerts page; collapsible field groups from real data
+frontend/src/components/MetricsStrip.jsx    — 6 live metrics strip (open/critical/high/hosts/EPS/event types)
+frontend/src/components/AlertsHistogram.jsx — Stacked 30-min histogram from /api/events
+frontend/src/components/AlertsTable.jsx     — Sortable alerts table with severity dot + risk meter + status
+frontend/src/components/DetailFlyout.jsx    — Right flyout on alert click: Summary/Entity/MITRE/Filesystem graph/Raw JSON
+frontend/src/components/EventDetailModal.jsx — Modal on TacticalResponseLog event click: same sections as flyout
+frontend/src/components/FileSystemGraph.jsx  — D3 v7 Obsidian-style force-directed graph; zoom/drag/tooltip;
+                                               highlightPath pulls selected node to center with blue glow
+frontend/src/components/FileSystemTree.jsx  — Text tree (Detections page only); highlightPath + compact props added
+frontend/src/components/TacticalResponseLog.jsx — Event rows are clickable → opens EventDetailModal
+frontend/src/components/AIAnalystPanel.jsx
+frontend/src/components/AlertFeed.jsx
+frontend/src/components/EventChart.jsx
+frontend/src/components/HostRiskPanel.jsx
+frontend/src/components/StatsBar.jsx
+
+frontend/src/pages/AlertsPage.jsx     — 3-column SIEM layout: FacetRail + (metrics+histogram+table) + DetailFlyout
+frontend/src/pages/Overview.jsx       — Dashboard with StatsBar, EventChart, AlertFeed, TacticalResponseLog, HostRiskPanel
 frontend/src/pages/HostsPage.jsx
-frontend/src/pages/FilesystemPage.jsx
-frontend/src/pages/ReportsPage.jsx   — PDF forensic export with date/severity filter + host overview table
+frontend/src/pages/FilesystemPage.jsx — "Detections" in nav; uses FileSystemTree (full text tree with search)
+frontend/src/pages/AIAnalystPage.jsx
+frontend/src/pages/ReportsPage.jsx    — PDF forensic export with date/severity filter + host overview table
 ```
 
 ---
@@ -109,19 +140,20 @@ Groq keys are also accepted in place of NVIDIA keys — auto-detected by the `gs
 
 ## Hard rules — never violate these
 
-1. **WATCH_PATH must be outside ~/hybrid-rsentry.** Canary files (AAA_*.txt) corrupt git refs if placed inside the project directory. The agent now calls `_validate_watch_path()` at startup and exits immediately if this rule is violated.
+1. **WATCH_PATH must be outside ~/hybrid-rsentry.** Canary files (AAA_*.txt) corrupt git refs if placed inside the project directory. The agent calls `_validate_watch_path()` at startup and exits immediately if violated.
 2. **Never run `docker compose down -v`.** The `-v` flag deletes the Postgres data volume. Use `docker compose down` only.
 3. **Never edit `.env.example` thinking it is `.env`.** Real secrets are in `.env` (gitignored).
 4. **Always start the agent with `sudo -E`** after sourcing `.env`. Without `-E`, sudo strips env vars and the agent watches the wrong path.
 5. **Always activate the venv before pip commands:** `source venv/bin/activate`
 6. **Never run `npm audit fix --force`** on the frontend without checking what it intends to install.
 7. **Do not suggest adding authentication middleware** without understanding the full async SQLAlchemy dependency chain — this has broken the app before.
+8. **Never merge Dependabot PRs #38 (Vite 8), #42 (Tailwind 4), #43 (react-router-dom 7), #37 (openai 2) without manual review** — all are major breaking versions.
 
 ---
 
-## Frontend stack (as of 2026-05-30)
+## Frontend stack (as of 2026-06-03)
 
-The dashboard was migrated from Create React App to **Vite** (PR #33) and upgraded to **React 19** (PR #34).
+The dashboard was migrated from Create React App to **Vite** (PR #33), upgraded to **React 19** (PR #34), and fully redesigned to a SIEM/Kibana-style layout.
 
 | Package | Version | Note |
 |---|---|---|
@@ -129,13 +161,29 @@ The dashboard was migrated from Create React App to **Vite** (PR #33) and upgrad
 | vite | 5.x | replaces react-scripts entirely |
 | @vitejs/plugin-react | 4.x | |
 | tailwindcss | 3.x | configured via postcss.config.js |
+| d3 | 7.9.x | force-directed filesystem graph |
 | date-fns | 4.x | |
 | lucide-react | 1.x | |
 | recharts | 2.12.x | React 19 compatible |
+| IBM Plex Sans/Mono | Google Fonts | typography for SIEM design |
+| Font Awesome | 6.5.1 CDN | icons in TopBar, DetailFlyout, etc. |
 
 `npm run build` produces output in `frontend/dist/` (not `build/`).
 `npm start` maps to `vite` (dev server on port 3000 with proxy to backend).
 Node.js 22 is used in CI (`deploy-landing.yml`) and Docker (`Dockerfile.frontend`).
+
+**Design system** (CSS variables in `index.css`):
+- `--bg: #131519` · `--panel: #191b21` · `--panel-2: #1e2027` · `--border: #2b2e37`
+- `--crit: #d8503c` · `--high: #d6873a` · `--med: #c9b13f` · `--low: #5b8fb0`
+- `--accent: #4f8cc9` · `--ok: #4e9e7e`
+
+**Navigation mapping** (TopBar tabs → pages):
+- Overview → Overview page (dashboard)
+- Alerts → AlertsPage (3-column SIEM layout)
+- Hosts → HostsPage
+- Detections → FilesystemPage
+- AI Analyst → AIAnalystPage
+- Reports → ReportsPage
 
 ---
 
@@ -164,14 +212,22 @@ Cause: rate limit hit on the active provider.
 Fix: if persistent, check `AI_API_KEY_CEREBRAS` is set (Cerebras has higher limits); rotate `NVIDIA_API_KEY` and `NVIDIA_API_KEY_ALERTS` in `.env` and restart Celery.
 
 **Alert counts wrong or stale in dashboard**
-StatsBar uses `/api/alerts/counts` endpoint. Risk score updates and WebSocket pushes go through Celery.
+MetricsStrip and StatsBar use `/api/alerts/counts` endpoint. Risk score updates and WebSocket pushes go through Celery.
 Fix: confirm the Celery worker is running.
 
 **Risk score stuck at 0 after clearing alerts**
 This is correct behaviour. The score recalculates via Celery on the next incoming event.
 
+**Frontend blank page / `process is not defined` error**
+Cause: `AIAnalystPanel.jsx` and `useWebSocket.js` use legacy CRA-era `process.env.REACT_APP_*` syntax.
+Fix: already fixed — `vite.config.js` has `define: { 'process.env': {} }` shim. If it recurs, check those two files.
+
 **GitHub Actions deploy-landing.yml — Node.js version**
 The workflow uses `node-version: 22` and `node:22-alpine` in the Docker build. Node 22 is LTS until April 2027.
+
+**eBPF sensor fails to load tracepoints**
+Cause: kernel < 6.19 or BCC version mismatch.
+Fix: confirm `uname -r` ≥ 6.19 and `pip show bcc` is 0.35+. The sensor uses TRACEPOINT_PROBE (not kprobe) and BPF_PERF_OUTPUT (not BPF_RINGBUF) for compatibility.
 
 ---
 
@@ -223,6 +279,12 @@ docker exec -it rsentry_postgres psql -U rsentry -d rsentry_db \
 
 # Watch Redis for live traffic
 redis-cli subscribe rsentry:alerts
+
+# Run LockBit 5.0 simulation (eBPF Phase 3)
+cd ~/hybrid-rsentry && source venv/bin/activate && python -m simulations.sim_lockbit
+
+# Run Akira simulation
+python -m simulations.sim_akira
 
 # Swagger UI (while uvicorn is running)
 # http://localhost:8000/docs
