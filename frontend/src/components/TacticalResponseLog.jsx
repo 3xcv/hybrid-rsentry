@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { getEvents } from '../api/client';
+import EventDetailModal from './EventDetailModal';
 
 // ─── Response procedure mapping ───────────────────────────────────────────
 
@@ -24,14 +25,16 @@ function getProcedure(event) {
 
 // ─── Single event row ──────────────────────────────────────────────────────
 
-function EventRow({ event, isNew }) {
+function EventRow({ event, isNew, onSelect }) {
   const proc = getProcedure(event);
   const isMov = event.event_type === 'HEARTBEAT' && event.details?.sub_type === 'MARKOV_REPOSITION';
 
   return (
     <div
-      className={`border-l-2 pl-3 py-2 mb-2 rounded-r-lg transition-all ${isNew ? 'opacity-100' : 'opacity-80'}`}
+      onClick={() => onSelect(event)}
+      className={`border-l-2 pl-3 py-2 mb-2 rounded-r-lg transition-all cursor-pointer ${isNew ? 'opacity-100' : 'opacity-80'}`}
       style={{ borderColor: proc.color, backgroundColor: proc.bg }}
+      title="Click to view details"
     >
       {/* Top row */}
       <div className="flex items-center gap-2 flex-wrap">
@@ -104,9 +107,10 @@ function EventRow({ event, isNew }) {
 const FILTER_OPTIONS = ['ALL', 'CANARY', 'ENTROPY', 'MARKOV', 'PROCESS', 'CONTAINMENT'];
 
 export default function TacticalResponseLog({ liveEvent }) {
-  const [events, setEvents] = useState([]);
-  const [newIds, setNewIds] = useState(new Set());
-  const [filter, setFilter] = useState('ALL');
+  const [events,        setEvents]        = useState([]);
+  const [newIds,        setNewIds]        = useState(new Set());
+  const [filter,        setFilter]        = useState('ALL');
+  const [selectedEvent, setSelectedEvent] = useState(null);
 
   const fetchEvents = async () => {
     try {
@@ -183,10 +187,12 @@ export default function TacticalResponseLog({ liveEvent }) {
           <p className="text-gray-600 text-xs italic text-center mt-4">No events yet. Run a simulation to see activity.</p>
         ) : (
           filtered.map((event) => (
-            <EventRow key={event.id} event={event} isNew={newIds.has(event.id)} />
+            <EventRow key={event.id} event={event} isNew={newIds.has(event.id)} onSelect={setSelectedEvent} />
           ))
         )}
       </div>
+
+      <EventDetailModal event={selectedEvent} onClose={() => setSelectedEvent(null)} />
     </div>
   );
 }
