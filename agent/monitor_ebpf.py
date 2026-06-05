@@ -383,6 +383,14 @@ class DetectionEngine:
         self._active_pids.add(pid)
         return evt
 
+    # inode → path mapping for write monitoring
+    _inode_path_cache: dict = {}
+    # PID write burst tracking for in-place encryption detection
+    _write_burst: dict = {}  # pid → {"count": int, "ts": float, "inodes": set}
+    _WRITE_BURST_THRESHOLD = 10   # 10 writes
+    _WRITE_BURST_WINDOW    = 2.0  # in 2 seconds
+    _ENTROPY_THRESHOLD     = 7.0  # bits — encrypted content
+
     def observe_write(
         self,
         pid: int,
@@ -396,16 +404,49 @@ class DetectionEngine:
             return None
         if comm in self.ignore_comms:
             return None
-        if not self._is_canary_inode(inode):
-            return None
-        if self._is_suppressed(path):
-            return None
-        sev = "CRITICAL"
-        return self._make_event(
-            "CANARY_TOUCHED", sev, pid, ppid, comm,
-            path, path, ts,
-            extra={"trigger": "write", "inode": inode},
-        )
+
+        # Layer 1: Canary inode write → CRITICAL immediately
+        if self._is_canary_inode(inode):
+            return self._make_event(
+                "CANARY_TOUCHED", "CRITICAL", pid, ppid, comm,
+                path, path, ts,
+                extra={"trigger": "write", "inode": inode},
+            )
+
+        # Layer 2: In-place encryption detection (system-wide)
+        # Track write burst per PID across multiple inodes
+        burst = self._write_burst.get(pid)
+        if burst is None or (ts - burst["ts"]) > self._WRITE_BURST_WINDOW:
+            burst = {"count": 0, "ts": ts, "inodes": set()}
+            self._write_burst[pid] = burst
+        burst["count"] += 1
+        burst["inodes"].add(inode)
+
+        # Trigger entropy check when burst threshold reached
+        if burst["count"] >= self._WRITE_BURST_THRESHOLD and len(burst["inodes"]) >= 3:
+            # Check entropy of recently written file
+            file_path = path or self._inode_path_cache.get(inode, "")
+            if file_path and self.entropy_fn:
+                try:
+                    entropy = float(self.entropy_fn(file_path))
+                    if entropy >= self._ENTROPY_THRESHOLD:
+                        # High entropy writes across multiple files = silent encryption
+                        burst["count"] = 0  # reset to avoid spam
+                        burst["inodes"] = set()
+                        return self._make_event(
+                            "SILENT_ENCRYPTION", "HIGH", pid, ppid, comm,
+                            file_path, file_path, ts,
+                            extra={
+                                "trigger":       "write_entropy",
+                                "inode":         inode,
+                                "entropy_bits":  round(entropy, 3),
+                                "write_count":   burst["count"],
+                                "unique_inodes": len(burst["inodes"]),
+                            },
+                        )
+                except Exception:
+                    pass
+        return None
 
     def observe_kernel_burst(
         self,
@@ -474,51 +515,109 @@ def seed_canaries(
 
 def build_bpf(enforce: bool = True, lsm: bool = False) -> str:
     """
-    Full kernel-space integration:
-    - TRACEPOINT: captures all renames system-wide
-    - Velocity map: kernel blocks burst renames in nanoseconds
-    - Canary inode map: kernel blocks canary touches instantly
-    - Write monitor: detects silent in-place encryption
-    - LSM hook: enforces all blocks without userspace roundtrip
+    Full kernel-space behavioral detection — system-wide:
+    - TRACEPOINT rename:  velocity + canary
+    - TRACEPOINT openat:  mass file access
+    - kprobe vfs_write:   write burst (filtered)
+    - TRACEPOINT unlink:  file deletion (strongest signal)
+    - TRACEPOINT execve:  process spawning
+    - LSM hook:           kernel-space blocking
+    - Process profile:    multi-signal behavioral scoring
     """
     return f"""
 #include <uapi/linux/ptrace.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
 
-BPF_HASH(rename_count,  u32, u64);
-BPF_HASH(rename_ts,     u32, u64);
-BPF_HASH(canary_inodes, u64, u8);
-BPF_HASH(blocked_pids,  u32, u8);
-BPF_HASH(write_count,   u32, u64);
-BPF_HASH(write_ts,      u32, u64);
+// ── Maps ─────────────────────────────────────────────────────────────────
+BPF_HASH(canary_inodes, u64, u8,    1000);
+BPF_HASH(blocked_pids,  u32, u8,   10000);
+BPF_HASH(rename_count,  u32, u64,  10000);
+BPF_HASH(rename_ts,     u32, u64,  10000);
+BPF_HASH(write_ts,      u32, u64,  10000);
+BPF_HASH(write_count,   u32, u64,  10000);
+
+// ── Process behavioral profile ───────────────────────────────────────────
+struct proc_profile_t {{
+    u64 files_opened;
+    u64 files_written;
+    u64 files_deleted;
+    u64 files_renamed;
+    u64 write_bytes;
+    u64 read_bytes;
+    u64 unique_dirs;
+    u64 child_procs;
+    u64 first_op_ts;
+    u64 last_op_ts;
+    u8  score;
+    u8  alerted;
+}};
+BPF_HASH(proc_profiles, u32, struct proc_profile_t, 10000);
+
+// ── Perf outputs ─────────────────────────────────────────────────────────
 BPF_PERF_OUTPUT(rename_events);
 BPF_PERF_OUTPUT(write_events);
+BPF_PERF_OUTPUT(behavior_events);
 
-#define VELOCITY_THRESHOLD  3
-#define WINDOW_NS          (3ULL * 1000000000ULL)
-#define WRITE_BURST_THRESH  50
-#define WRITE_WINDOW_NS    (5ULL * 1000000000ULL)
+#define VELOCITY_THRESHOLD   3
+#define WINDOW_NS           (3ULL * 1000000000ULL)
+#define WRITE_WINDOW_NS     (5ULL * 1000000000ULL)
+#define WRITE_BURST_THRESH   50
+#define SCORE_BLOCK          70
+#define SCORE_ALERT          50
 
 struct rename_event_t {{
-    u32 pid; u32 ppid;
-    char comm[16];
+    u32 pid; u32 ppid; char comm[16];
     u64 count; u64 ts;
-    u8  canary_hit;
-    u8  kernel_blocked;
-    char oldname[128];
-    char newname[128];
+    u8  canary_hit; u8 kernel_blocked;
+    char oldname[128]; char newname[128];
 }};
 struct write_event_t {{
-    u32 pid; u32 ppid;
-    char comm[16];
+    u32 pid; u32 ppid; char comm[16];
     u64 inode; u64 ts; u64 write_count;
 }};
+struct behavior_event_t {{
+    u32 pid; u32 ppid; char comm[16];
+    u64 ts; u8 score; u8 trigger;
+    u64 files_opened; u64 files_written;
+    u64 files_deleted; u64 files_renamed;
+    u64 unique_dirs; u64 child_procs;
+}};
 
+// ── Score calculator ──────────────────────────────────────────────────────
+static inline u8 __calc_score(struct proc_profile_t *p) {{
+    u8 score = 0;
+
+    // Signal 1: rapid unlink+write (ransomware pattern)
+    if (p->files_deleted > 0 && p->files_written > 0) {{
+        u64 elapsed_ms = (p->last_op_ts > p->first_op_ts) ?
+            (p->last_op_ts - p->first_op_ts) / 1000000ULL : 1;
+        u64 del_per_sec = (p->files_deleted * 1000) / elapsed_ms;
+        if (del_per_sec >= 2) {{ score += 35; }}
+        if (del_per_sec >= 2 && p->files_deleted > 5) {{ score += 10; }}
+    }}
+    // Signal 2: rename velocity
+    if (p->files_renamed >= 3) score += 25;
+    // Signal 3: mass file ops across dirs (write OR open)
+    u64 total_file_ops = p->files_opened + p->files_written + p->files_deleted;
+    if (total_file_ops > 15 && p->files_deleted > 3) score += 15;
+    // Signal 4: write/read symmetry
+    if (p->files_written > 5 && p->read_bytes > 0 && p->write_bytes > 0) {{
+        u64 ratio = (p->write_bytes * 100) / p->read_bytes;
+        if (ratio > 80 && ratio < 120) score += 15;
+    }}
+    // Signal 5: child spawning + file ops
+    if (p->child_procs > 5 && p->files_written > 10) score += 10;
+
+    return score > 100 ? 100 : score;
+}}
+
+// ── Rename handler ────────────────────────────────────────────────────────
 static inline int __handle_rename(void *ctx,
     const char __user *oldpath, const char __user *newpath) {{
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     u64 ts  = bpf_ktime_get_ns();
+
     u64 *last = rename_ts.lookup(&pid);
     u64 *cnt  = rename_count.lookup(&pid);
     u64 new_cnt = 1;
@@ -526,11 +625,22 @@ static inline int __handle_rename(void *ctx,
         new_cnt = *cnt + 1;
     rename_count.update(&pid, &new_cnt);
     rename_ts.update(&pid, &ts);
-    {"u8 one = 1; if (new_cnt >= VELOCITY_THRESHOLD) {{ blocked_pids.update(&pid, &one); }}" if (enforce and lsm) else ""}
+
+    {"u8 one = 1; if (new_cnt >= VELOCITY_THRESHOLD) { blocked_pids.update(&pid, &one); }" if (enforce and lsm) else ""}
+
+    struct proc_profile_t *p = proc_profiles.lookup(&pid);
+    struct proc_profile_t newp = {{0}};
+    if (!p) {{ newp.first_op_ts = ts; p = &newp; }}
+    p->files_renamed++;
+    p->last_op_ts = ts;
+    p->score = __calc_score(p);
+    // Behavioral score block — needs higher threshold than velocity
+    {"u8 blk = 1; if (p->score >= 85) { blocked_pids.update(&pid, &blk); }" if (enforce and lsm) else ""}
+    proc_profiles.update(&pid, p);
+
     struct rename_event_t ev = {{0}};
-    ev.pid  = pid;
-    ev.ppid = (u32)(bpf_get_current_pid_tgid() & 0xFFFFFFFF);
-    ev.ts   = ts; ev.count = new_cnt;
+    ev.pid = pid; ev.ppid = (u32)(bpf_get_current_pid_tgid() & 0xFFFFFFFF);
+    ev.ts = ts; ev.count = new_cnt;
     bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
     bpf_probe_read_user_str(&ev.oldname, sizeof(ev.oldname), oldpath);
     bpf_probe_read_user_str(&ev.newname, sizeof(ev.newname), newpath);
@@ -541,9 +651,69 @@ TRACEPOINT_PROBE(syscalls, sys_enter_rename)    {{ return __handle_rename(args, 
 TRACEPOINT_PROBE(syscalls, sys_enter_renameat)  {{ return __handle_rename(args, args->oldname, args->newname); }}
 TRACEPOINT_PROBE(syscalls, sys_enter_renameat2) {{ return __handle_rename(args, args->oldname, args->newname); }}
 
-int kprobe__vfs_write(struct pt_regs *ctx, struct file *file) {{
+// ── Unlink handler (strongest signal) ────────────────────────────────────
+static inline int __handle_unlink(void *ctx) {{
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     u64 ts  = bpf_ktime_get_ns();
+    struct proc_profile_t *p = proc_profiles.lookup(&pid);
+    struct proc_profile_t newp = {{0}};
+    if (!p) {{ newp.first_op_ts = ts; p = &newp; }}
+    p->files_deleted++;
+    p->last_op_ts = ts;
+    p->score = __calc_score(p);
+    {"u8 one = 1; if (p->score >= SCORE_BLOCK) { blocked_pids.update(&pid, &one); }" if (enforce and lsm) else ""}
+    proc_profiles.update(&pid, p);
+    if (p->score >= SCORE_ALERT && !p->alerted) {{
+        struct behavior_event_t ev = {{0}};
+        ev.pid = pid; ev.ts = ts; ev.score = p->score; ev.trigger = 1;
+        ev.files_opened = p->files_opened; ev.files_written = p->files_written;
+        ev.files_deleted = p->files_deleted; ev.files_renamed = p->files_renamed;
+        ev.unique_dirs = p->unique_dirs; ev.child_procs = p->child_procs;
+        bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
+        behavior_events.perf_submit(ctx, &ev, sizeof(ev));
+        p->alerted = 1;
+        proc_profiles.update(&pid, p);
+    }}
+    return 0;
+}}
+TRACEPOINT_PROBE(syscalls, sys_enter_unlink)   {{ return __handle_unlink(args); }}
+TRACEPOINT_PROBE(syscalls, sys_enter_unlinkat) {{ return __handle_unlink(args); }}
+
+// ── Openat handler ────────────────────────────────────────────────────────
+TRACEPOINT_PROBE(syscalls, sys_enter_openat) {{
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    u64 ts  = bpf_ktime_get_ns();
+    struct proc_profile_t *p = proc_profiles.lookup(&pid);
+    struct proc_profile_t newp = {{0}};
+    if (!p) {{ newp.first_op_ts = ts; p = &newp; }}
+    p->files_opened++;
+    p->last_op_ts = ts;
+    p->score = __calc_score(p);
+    proc_profiles.update(&pid, p);
+    return 0;
+}}
+
+// ── Write handler (filtered — only suspicious PIDs) ───────────────────────
+int kprobe__vfs_write(struct pt_regs *ctx, struct file *file) {{
+    // Only track regular file writes (skip pipes, sockets, kernel files)
+    if (!file || !file->f_inode) return 0;
+    umode_t mode = file->f_inode->i_mode;
+    if (!S_ISREG(mode)) return 0;
+    // Skip kernel threads (pid < 100)
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    if (pid < 100) return 0;
+    u64 ts  = bpf_ktime_get_ns();
+    struct proc_profile_t *p = proc_profiles.lookup(&pid);
+    struct proc_profile_t newp = {{0}};
+    if (!p) {{ newp.first_op_ts = ts; p = &newp; }}
+    // Update process profile write count
+    p->files_written++;
+    p->write_bytes += (u64)PT_REGS_PARM3(ctx);
+    p->last_op_ts = ts;
+    p->score = __calc_score(p);
+    {"u8 blk = 1; if (p->score >= SCORE_BLOCK) { blocked_pids.update(&pid, &blk); }" if (enforce and lsm) else ""}
+    proc_profiles.update(&pid, p);
+
     u64 *last = write_ts.lookup(&pid);
     u64 *cnt  = write_count.lookup(&pid);
     u64 new_cnt = 1;
@@ -551,34 +721,50 @@ int kprobe__vfs_write(struct pt_regs *ctx, struct file *file) {{
         new_cnt = *cnt + 1;
     write_count.update(&pid, &new_cnt);
     write_ts.update(&pid, &ts);
+    u8 *blocked = blocked_pids.lookup(&pid);
+    if (!blocked && new_cnt < WRITE_BURST_THRESH) return 0;
     struct write_event_t ev = {{0}};
-    ev.pid = pid;
-    ev.ppid = (u32)(bpf_get_current_pid_tgid() & 0xFFFFFFFF);
-    ev.ts = ts; ev.inode = file->f_inode->i_ino;
-    ev.write_count = new_cnt;
+    ev.pid = pid; ev.ppid = (u32)(bpf_get_current_pid_tgid() & 0xFFFFFFFF);
+    ev.ts = ts; ev.inode = file->f_inode->i_ino; ev.write_count = new_cnt;
     bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
     write_events.perf_submit(ctx, &ev, sizeof(ev));
     return 0;
 }}
 
-{"" if not (enforce and lsm) else """
-LSM_PROBE(path_rename,
-          const struct path *old_dir, struct dentry *old_dentry,
-          const struct path *new_dir, struct dentry *new_dentry) {{
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
-    u8 *blocked = blocked_pids.lookup(&pid);
-    if (blocked && *blocked) return -EPERM;
-    if (old_dentry && old_dentry->d_inode) {{
-        u64 inode = old_dentry->d_inode->i_ino;
-        u8 *is_canary = canary_inodes.lookup(&inode);
-        if (is_canary) {{
-            u8 one = 1;
-            blocked_pids.update(&pid, &one);
-            return -EPERM;
-        }}
+// ── Execve handler ────────────────────────────────────────────────────────
+TRACEPOINT_PROBE(syscalls, sys_enter_execve) {{
+    u32 pid  = bpf_get_current_pid_tgid() >> 32;
+    u32 ppid = (u32)(bpf_get_current_pid_tgid() & 0xFFFFFFFF);
+    u64 ts   = bpf_ktime_get_ns();
+    struct proc_profile_t *p = proc_profiles.lookup(&ppid);
+    if (p) {{
+        p->child_procs++;
+        p->score = __calc_score(p);
+        {"u8 one = 1; if (p->score >= SCORE_BLOCK) { blocked_pids.update(&ppid, &one); }" if (enforce and lsm) else ""}
+        proc_profiles.update(&ppid, p);
     }}
     return 0;
 }}
+
+// ── BPF LSM Hook ──────────────────────────────────────────────────────────
+{"" if not (enforce and lsm) else """
+LSM_PROBE(path_rename,
+          const struct path *old_dir, struct dentry *old_dentry,
+          const struct path *new_dir, struct dentry *new_dentry) {
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    u8 *blocked = blocked_pids.lookup(&pid);
+    if (blocked && *blocked) return -EPERM;
+    if (old_dentry && old_dentry->d_inode) {
+        u64 inode = old_dentry->d_inode->i_ino;
+        u8 *is_canary = canary_inodes.lookup(&inode);
+        if (is_canary) {
+            u8 one = 1;
+            blocked_pids.update(&pid, &one);
+            return -EPERM;
+        }
+    }
+    return 0;
+}
 """}
 """
 
@@ -753,11 +939,36 @@ def run_sensor(
         pid   = ev.pid
         comm  = ev.comm.decode(errors="replace").rstrip("\x00")
         ts    = time.time()
-        event = engine.observe_write(pid, ev.ppid, comm, ev.inode, "", ts)
+        # Resolve inode → path for entropy check
+        inode = ev.inode
+        path  = engine._inode_path_cache.get(inode, "")
+        if not path:
+            # Try to resolve from /proc/pid/fd
+            try:
+                import os as _os
+                for fd in _os.listdir(f"/proc/{pid}/fd"):
+                    try:
+                        p = _os.readlink(f"/proc/{pid}/fd/{fd}")
+                        if _os.stat(p).st_ino == inode:
+                            engine._inode_path_cache[inode] = p
+                            path = p
+                            break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        event = engine.observe_write(pid, ev.ppid, comm, inode, path, ts)
         if event:
-            _emit(event)
             if enforce and pid > 0:
-                _contain(pid, comm)
+                # Arm PID in BPF map for silent encryption
+                try:
+                    b["blocked_pids"][b["blocked_pids"].Key(pid)] =                         b["blocked_pids"].Leaf(1)
+                except Exception:
+                    pass
+            try:
+                _score_q.put_nowait((event, pid, path))
+            except Exception:
+                _emit(event)
 
     b["rename_events"].open_perf_buffer(_handle_rename, page_cnt=8192)
     b["write_events"].open_perf_buffer(_handle_write, page_cnt=64)
