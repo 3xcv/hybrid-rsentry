@@ -59,7 +59,6 @@ export default function NodeSphere({ radius = 1.1, isMobile = false }) {
   const groupRef     = useRef();
   const meshRef      = useRef();
   const edgeRef      = useRef();
-  const colorsRef    = useRef(null);
   const phaseRef     = useRef('idle'); // idle | spreading | containing
   const infectedRef  = useRef(new Set());
   const containedRef = useRef(new Set());
@@ -75,8 +74,6 @@ export default function NodeSphere({ radius = 1.1, isMobile = false }) {
     for (let i = 0; i < NODE_COUNT; i++) CYAN_COLOR.toArray(c, i * 3);
     return c;
   }, []);
-  colorsRef.current = nodeColors;
-
   // Edge geometry
   const edgeGeometry = useMemo(() => {
     const pts = [];
