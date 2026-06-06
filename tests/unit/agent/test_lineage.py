@@ -67,9 +67,10 @@ class TestScoreForEvent:
         r = score_for_event(os.getpid())
         for k in ["lineage_score","process_name","exe","ancestors","sha256","reasons"]:
             assert k in r
-    def test_nonexistent_pid_zero_score(self):
+    def test_nonexistent_pid_baseline_score(self):
+        # Process not found = process exited rapidly (+40 baseline)
         r = score_for_event(99999999)
-        assert r["lineage_score"] == 0.0
+        assert r["lineage_score"] >= 40.0
         assert "process_not_found" in r["reasons"]
     def test_score_is_float(self):
         assert isinstance(score_for_event(os.getpid())["lineage_score"], float)

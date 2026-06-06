@@ -31,8 +31,9 @@ class TestLineageSeverity:
     def test_current_process_low_score(self):
         r = score_for_event(os.getpid())
         assert r["lineage_score"] <= 60.0
-    def test_nonexistent_pid_zero(self):
-        assert score_for_event(99999999)["lineage_score"] == 0.0
+    def test_nonexistent_pid_baseline(self):
+        # Process not found = process exited rapidly (+40 baseline)
+        assert score_for_event(99999999)["lineage_score"] >= 40.0
     def test_score_capped_at_100(self):
         with patch("agent.lineage.psutil.Process") as mc:
             mp = MagicMock()
