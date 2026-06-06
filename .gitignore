@@ -36,5 +36,11 @@ frontend/.env.local
 *.swp
 
 # Canary files — never track these in git
-AAA_*.txt
-**/AAA_*.txt
+# 4 prefixes (agent/graph.py, agent/monitor_ebpf.py): AAA_ aaa_ ZZZ_ zzz_
+# Any extension — graph.py always uses .txt; monitor_ebpf.py seeds from
+# ATTRACTIVE_EXTS (.docx .xlsx .pdf .db .vmdk). No leading slash needed:
+# gitignore patterns without "/" already match at any directory depth.
+AAA_*
+aaa_*
+ZZZ_*
+zzz_*

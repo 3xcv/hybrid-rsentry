@@ -14,7 +14,7 @@ A multi-process Python + React application with five processes that must all be 
 | Docker (Postgres + Redis) | Database and message broker |
 | FastAPI backend (`uvicorn`) | REST API + WebSocket server on port 8000 |
 | Celery worker | Async tasks: AI analysis, WebSocket push, risk scoring |
-| Agent (`agent.monitor` or `agent.monitor_ebpf`) | Watchdog that monitors files, detects threats, fires containment |
+| Agent (`agent.monitor`; sensor backend chosen via `--backend`/`SENSOR_BACKEND`, defaults to `ebpf`) | Watchdog that monitors files, detects threats, fires containment |
 | React frontend (`npm start`) | Dashboard on port 3000 (Vite dev server) |
 
 ---
@@ -38,7 +38,8 @@ cd ~/hybrid-rsentry && set -a && source .env && set +a && source venv/bin/activa
 # Terminal 3 — source .env first so DATABASE_URL and AI keys reach Celery
 cd ~/hybrid-rsentry && set -a && source .env && set +a && PYTHONPATH=. celery -A backend.workers.tasks:celery_app worker --loglevel=info
 
-# Terminal 4 — sudo -E is mandatory to preserve WATCH_PATH and other env vars
+# Terminal 4 — sudo -E preserves shell-exported overrides (SENSOR_BACKEND, DRY_RUN, etc);
+# monitor.py also auto-loads .env via load_dotenv(), so WATCH_PATH loads correctly even without -E.
 cd ~/hybrid-rsentry && set -a && source .env && set +a && sudo -E ~/hybrid-rsentry/venv/bin/python -m agent.monitor
 
 # Terminal 5
@@ -60,13 +61,19 @@ backend/routers/ws.py            — WebSocket; subscribes to 3 Redis channels
 backend/workers/tasks.py         — All Celery tasks; reads .env directly via _env() — no dotenv
 backend/services/ai_analyst.py   — Multi-provider AI: Cerebras → NVIDIA/Groq fallback chain
 
-agent/monitor.py                 — Main watchdog (inotify backend); _validate_watch_path() exits if WATCH_PATH inside git repo
-agent/monitor_ebpf.py            — eBPF sensor (NEW — Phase 3); TRACEPOINT_PROBE for rename syscalls; velocity burst detection;
-                                    ransomware family profiling (LockBit5/Akira/ESXi); kernel 6.19+, BCC 0.35 compat
+agent/monitor.py                 — Main watchdog; SENSOR_BACKEND/--backend selects inotify or eBPF (defaults to "ebpf" — system-wide,
+                                    not WATCH_PATH-scoped); auto-loads .env via load_dotenv(); _validate_watch_path() exits if
+                                    WATCH_PATH inside git repo
+agent/monitor_ebpf.py            — eBPF sensor (default backend); 5-syscall behavioral scoring (openat/vfs_write/unlink/rename/execve)
+                                    + silent-encryption detection (entropy>=6.5 on in-place rewrites); BPF-LSM inline block
+                                    (LSM_PROBE path_rename, -EPERM) when lsm=bpf kernel param active, else SIGSTOP fallback;
+                                    velocity burst detection; ransomware family profiling (LockBit5/Akira/ESXi); kernel 6.19+, BCC 0.35 compat
 agent/graph.py                   — FilesystemGraph: BFS directory walk + canary placement + cleanup
 agent/entropy.py                 — Shannon entropy engine; memory-capped at 5000 files, 65KB partial reads
-agent/containment.py             — Tree-aware SIGSTOP → evidence capture → iptables DROP → SIGKILL; PID resolved from /proc
-agent/adaptive.py                — Markov chain repositioner; _is_safe_target() blocks .git/ and system dirs
+agent/containment.py             — Tree-aware SIGSTOP → evidence capture → iptables DROP → SIGKILL; PID resolved from /proc;
+                                    skips iptables DROP for uid=0/root (would block the agent itself)
+agent/adaptive.py                — Markov chain repositioner (inotify backend only — disabled for eBPF, since system-wide
+                                    canaries make repositioning unnecessary); _is_safe_target() blocks .git/ and system dirs
 agent/lineage.py                 — Process ancestry scorer + dpkg hash verification (416K hashes)
 agent/exceptions.py              — Whitelist: browsers, package managers, system paths; smart /tmp filter
 agent/client.py                  — HTTP client that posts events to /api/events
@@ -140,10 +147,10 @@ Groq keys are also accepted in place of NVIDIA keys — auto-detected by the `gs
 
 ## Hard rules — never violate these
 
-1. **WATCH_PATH must be outside ~/hybrid-rsentry.** Canary files (AAA_*.txt) corrupt git refs if placed inside the project directory. The agent calls `_validate_watch_path()` at startup and exits immediately if violated.
+1. **WATCH_PATH must be outside ~/hybrid-rsentry.** Canary files corrupt git refs if placed inside the project directory. The agent calls `_validate_watch_path()` at startup and exits immediately if violated. Canaries now use 4 prefixes — `AAA_`/`aaa_`/`ZZZ_`/`zzz_` (agent/graph.py, agent/monitor_ebpf.py) — but `.gitignore` only excludes `AAA_*.txt`/`**/AAA_*.txt`; if WATCH_PATH is ever misconfigured, `aaa_`/`ZZZ_`/`zzz_` canaries can corrupt git refs the same way `AAA_*.txt` did before.
 2. **Never run `docker compose down -v`.** The `-v` flag deletes the Postgres data volume. Use `docker compose down` only.
 3. **Never edit `.env.example` thinking it is `.env`.** Real secrets are in `.env` (gitignored).
-4. **Always start the agent with `sudo -E`** after sourcing `.env`. Without `-E`, sudo strips env vars and the agent watches the wrong path.
+4. **Start the agent with `sudo -E`** after sourcing `.env`. `monitor.py` now auto-loads `.env` via `load_dotenv()` at import (agent/monitor.py:35), so `WATCH_PATH` loads correctly even without `-E` — but `-E` is still needed to preserve shell-exported overrides (`SENSOR_BACKEND`, `DRY_RUN`, etc) that aren't in `.env`.
 5. **Always activate the venv before pip commands:** `source venv/bin/activate`
 6. **Never run `npm audit fix --force`** on the frontend without checking what it intends to install.
 7. **Do not suggest adding authentication middleware** without understanding the full async SQLAlchemy dependency chain — this has broken the app before.
@@ -190,8 +197,8 @@ Node.js 22 is used in CI (`deploy-landing.yml`) and Docker (`Dockerfile.frontend
 ## Known issues and fixes
 
 **Agent floods alerts from Firefox cache / wrong path**
-Cause: WATCH_PATH not passed through sudo.
-Fix: start agent with `sudo -E` after sourcing `.env` (see startup above).
+Cause: `WATCH_PATH` resolving to the wrong directory (e.g. the `/home` default).
+Fix: confirm `WATCH_PATH` in `.env` is correct. `monitor.py` now auto-loads `.env` via `load_dotenv()` at import, so this no longer strictly depends on `sudo -E` — but `-E` is still recommended for shell-exported overrides (see startup above).
 
 **Canary files appear in `.git/refs/heads/`** (legacy — now prevented on new installs)
 Symptom: git commands error; files named `AAA_*.txt` inside `.git/refs/`.
@@ -227,7 +234,7 @@ The workflow uses `node-version: 22` and `node:22-alpine` in the Docker build. N
 
 **eBPF sensor fails to load tracepoints**
 Cause: kernel < 6.19 or BCC version mismatch.
-Fix: confirm `uname -r` ≥ 6.19 and `pip show bcc` is 0.35+. The sensor uses TRACEPOINT_PROBE (not kprobe) and BPF_PERF_OUTPUT (not BPF_RINGBUF) for compatibility.
+Fix: confirm `uname -r` ≥ 6.19 and `pip show bcc` is 0.35+. The sensor mixes TRACEPOINT_PROBE (rename/unlink/openat/execve syscalls), `kprobe__vfs_write` (writes), and `LSM_PROBE` (inline canary blocking) — all feeding `BPF_PERF_OUTPUT` (not `BPF_RINGBUF`) for compatibility.
 
 ---
 
@@ -235,7 +242,7 @@ Fix: confirm `uname -r` ≥ 6.19 and `pip show bcc` is 0.35+. The sensor uses TR
 
 | Severity | Trigger | Auto-action |
 |---|---|---|
-| CRITICAL | Canary file (AAA_*.txt) touched or deleted; ransomware extension rename on document; combined score ≥ 70 | Immediate tree-aware: SIGSTOP → evidence → iptables DROP → SIGKILL |
+| CRITICAL | Canary file touched or deleted; ransomware extension rename on document; combined score ≥ 70 | Immediate tree-aware: SIGSTOP → evidence → iptables DROP (skipped for uid=0/root — would block the agent itself) → SIGKILL |
 | HIGH | Combined score 40–69 (entropy + lineage); new file with ransomware extension | AI analysis queued, alert record created |
 | MEDIUM | Entropy spike alone | AI analysis queued, alert record created |
 | LOW | Heartbeat / system events | Logged only, no alert record |
