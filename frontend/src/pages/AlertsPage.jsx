@@ -24,7 +24,12 @@ export default function AlertsPage({ newAlert, liveAiResult, liveEvent }) {
         getAlerts(params),
         getEvents({ limit: 500 }),
       ]);
-      setAlerts(alertRes.data);
+      const eventById = Object.fromEntries(eventRes.data.map(e => [String(e.id), e]));
+      const alertsWithType = alertRes.data.map(a => ({
+        ...a,
+        event_type: eventById[String(a.event_id)]?.event_type ?? null,
+      }));
+      setAlerts(alertsWithType);
       setEvents(eventRes.data);
     } catch (err) {
       console.error(err);
