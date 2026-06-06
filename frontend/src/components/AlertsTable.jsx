@@ -25,10 +25,11 @@ const STATUS_LABEL = { true: 'Acknowledged', false: 'Open' };
 function riskColor(r) { return r >= 85 ? 'var(--crit)' : r >= 65 ? 'var(--high)' : r >= 45 ? 'var(--med)' : 'var(--low)'; }
 
 function riskScore(alert) {
-  if (alert.severity === 'CRITICAL') return 90 + Math.min(9, (alert.id % 10));
-  if (alert.severity === 'HIGH')     return 65 + (alert.id % 20);
-  if (alert.severity === 'MEDIUM')   return 40 + (alert.id % 25);
-  return 20 + (alert.id % 20);
+  const n = parseInt((alert.id || '').replace(/-/g, '').slice(0, 8), 16) || 0;
+  if (alert.severity === 'CRITICAL') return 90 + Math.min(9, n % 10);
+  if (alert.severity === 'HIGH')     return 65 + (n % 20);
+  if (alert.severity === 'MEDIUM')   return 40 + (n % 25);
+  return 20 + (n % 20);
 }
 
 export default function AlertsTable({ alerts, selectedId, onSelect, page, setPage }) {
