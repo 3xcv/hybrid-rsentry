@@ -605,11 +605,6 @@ static inline u8 __calc_score(struct proc_profile_t *p) {{
     // Signal 3: mass file ops across dirs (write OR open)
     u64 total_file_ops = p->files_opened + p->files_written + p->files_deleted;
     if (total_file_ops > 15 && p->files_deleted > 3) score += 15;
-    // Signal 4: write/read symmetry
-    if (p->files_written > 5 && p->read_bytes > 0 && p->write_bytes > 0) {{
-        u64 ratio = (p->write_bytes * 100) / p->read_bytes;
-        if (ratio > 80 && ratio < 120) score += 15;
-    }}
     // Signal 5: child spawning + file ops
     if (p->child_procs > 5 && p->files_written > 10) score += 10;
 
@@ -1015,7 +1010,7 @@ def run_sensor(
                 entropy = float(engine.entropy_fn(sample_path))
             except Exception:
                 pass
-        if entropy >= 6.5 or not sample_path:
+        if entropy >= 6.5:
             event = engine._make_event(
                 "PROCESS_ANOMALY", "HIGH", pid, ev.ppid, comm,
                 sample_path, sample_path, ts,
@@ -1312,13 +1307,6 @@ if __name__ == "__main__":
         lsm = Path("/sys/kernel/security/lsm").read_text() if \
               Path("/sys/kernel/security/lsm").exists() else ""
         print(build_bpf(enforce=(args.mode=="enforce"), lsm=("bpf" in lsm)))
-        raise SystemExit(0)
-
-    if args.seed_canaries:
-        paths = seed_canaries([args.seed_into], per_dir=args.per_dir,
-                              dry_run=args.dry_run_seed)
-        for p in paths:
-            print(p)
         raise SystemExit(0)
 
     watch   = args.watch   or ["/tmp/rsentry_lab"]
