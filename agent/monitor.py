@@ -323,19 +323,19 @@ class RsentryEventHandler:
             details=details, severity=severity,
         )
 
-        is_markov = (pid == 0 and details.get("sub_type") == "moved")
-        if severity == "CRITICAL" and self.auto_contain and not is_markov:
+        if severity == "CRITICAL" and self.auto_contain:
             if pid > 0:
                 self._trigger_containment(pid, process_name, src_path,
-                                          lineage_score, entropy_delta)
+                                          lineage_score, entropy_delta, canary_hit)
             else:
                 self.client.send_containment_triggered(
                     pid=0, process_name="unknown", file_path=src_path,
                     lineage_score=lineage_score, entropy_delta=entropy_delta,
+                    canary_hit=canary_hit,
                 )
 
     def _trigger_containment(self, pid, process_name, file_path,
-                              lineage_score, entropy_delta):
+                              lineage_score, entropy_delta, canary_hit=False):
         with self._lock:
             if pid in self._contained_pids:
                 return
@@ -344,6 +344,7 @@ class RsentryEventHandler:
         self.client.send_containment_triggered(
             pid=pid, process_name=process_name, file_path=file_path,
             lineage_score=lineage_score, entropy_delta=entropy_delta,
+            canary_hit=canary_hit,
         )
         result = dry_run_contain(pid) if DRY_RUN else _contain(pid)
         self.client.send_containment_complete(pid, result.to_dict())

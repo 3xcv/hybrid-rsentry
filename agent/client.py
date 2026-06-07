@@ -151,7 +151,8 @@ class AgentClient:
         return self._post_with_retry("/api/events", payload)
 
     def send_containment_triggered(self, pid: int, process_name: str, file_path: str,
-                                    lineage_score: float, entropy_delta: float) -> Optional[dict]:
+                                    lineage_score: float, entropy_delta: float,
+                                    canary_hit: bool = False) -> Optional[dict]:
         return self.send_event(
             event_type="CONTAINMENT_TRIGGERED",
             pid=pid,
@@ -159,7 +160,7 @@ class AgentClient:
             file_path=file_path,
             lineage_score=lineage_score,
             entropy_delta=entropy_delta,
-            canary_hit=True,
+            canary_hit=canary_hit,
             severity="CRITICAL",
         )
 
