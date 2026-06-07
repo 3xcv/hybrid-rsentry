@@ -227,19 +227,19 @@ function LineageBadges() {
 const CARDS = [
   {
     id: 'entropy', title: 'Entropy Velocity Profiling', color: '#ffd700',
-    icon: (hov) => <WaveformIcon color="#ffd700" />,
+    icon: () => <WaveformIcon color="#ffd700" />,
     body: 'Shannon entropy computed across all directories simultaneously. When 3+ directories spike together within 10 seconds — ransomware is encrypting in bulk. EVP catches what signatures miss.',
     extra: <EntropyChart color="#ffd700" />,
   },
   {
     id: 'lineage', title: 'Process Lineage Scoring', color: '#b537f2',
-    icon: (hov) => <HelixIcon color="#b537f2" />,
+    icon: () => <HelixIcon color="#b537f2" />,
     body: 'Every process has a family tree. We score its entire ancestry — parent names, spawn location, binary SHA-256 hash. A process born in /tmp with no TTY scores 80/100 immediately.',
     extra: <LineageBadges />,
   },
   {
     id: 'canary', title: 'Adaptive Canary Repositioning', color: '#00f5ff',
-    icon: (hov) => <MarkovIcon color="#00f5ff" />,
+    icon: () => <MarkovIcon color="#00f5ff" />,
     body: "15 AAA_ canary files move themselves. A Markov transition matrix learns the ransomware's traversal pattern and predicts its next directory — placing a canary there before it arrives.",
     extra: <PredictionCounter />,
   },
