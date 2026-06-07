@@ -92,8 +92,3 @@ async def publish_to_channel(channel: str, data: dict[str, Any]) -> None:
         await redis.publish(channel, json.dumps(data))
     finally:
         await redis.aclose()
-
-
-# Keep old name for backwards compatibility
-async def publish_alert(alert_data: dict[str, Any]) -> None:
-    await publish_to_channel(ALERT_CHANNEL, alert_data)
