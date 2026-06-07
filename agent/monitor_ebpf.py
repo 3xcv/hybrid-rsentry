@@ -560,6 +560,48 @@ class DetectionEngine:
             },
         )
 
+    # Backup-destruction tooling — spawning any of these is an unambiguous
+    # ransomware pre-encryption step (kill shadow copies / recovery).
+    _BACKUP_DESTRUCT_KEYWORDS = ("vssadmin", "bcdedit", "wbadmin", "shadowcopy")
+
+    def observe_execve(
+        self,
+        pid: int,
+        ppid: int,
+        comm: str,
+        argv: List[str],
+        ts: float,
+    ) -> Optional[dict]:
+        """
+        Feature 4 — block backup-destruction tooling.
+
+        If a freshly exec'd child's argv references a backup/shadow-copy
+        destruction tool, emit CRITICAL BACKUP_DESTRUCTION and mark the PARENT
+        (the process that spawned it — the ransomware itself) frozen so the
+        caller SIGKILLs it. The BPF side mirrors this: it sets blocked_pids and
+        bpf_send_signal(SIGKILL)s the child inline, while the bprm_check LSM
+        hook returns -EPERM for any already-blocked PID.
+        """
+        if pid == self.self_pid:
+            return None
+        if comm in self.ignore_comms:
+            return None
+        hay = " ".join(a for a in (argv or []) if isinstance(a, str)).lower()
+        matched = [kw for kw in self._BACKUP_DESTRUCT_KEYWORDS if kw in hay]
+        if not matched:
+            return None
+        self._frozen_pids.add(ppid)
+        self._active_pids.add(ppid)
+        return self._make_event(
+            "BACKUP_DESTRUCTION", "CRITICAL", pid, ppid, comm, "", "", ts,
+            extra={
+                "trigger":     "execve",
+                "keywords":    matched,
+                "argv":        list(argv or [])[:8],
+                "kill_parent": ppid,
+            },
+        )
+
     def observe_kernel_burst(
         self,
         pid: int,
@@ -670,6 +712,54 @@ LSM_PROBE(path_rename,
     }
     return 0;
 }
+
+// Feature 4: deny exec() for any PID armed in blocked_pids (e.g. a ransomware
+// parent caught spawning vssadmin/bcdedit/wbadmin/shadowcopy). Returns -EPERM.
+LSM_PROBE(bprm_check_security, struct linux_binprm *bprm) {
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    u8 *blocked = blocked_pids.lookup(&pid);
+    if (blocked && *blocked) return -EPERM;
+    return 0;
+}
+"""
+
+    # Feature 4: kernel-space substring matcher for backup-destruction tooling.
+    # Scans a 64-byte buffer for vssadmin / bcdedit / wbadmin / shadowcop(y).
+    _kw_matcher = """
+static inline int __is_backup_destruct(const char *b) {
+    #pragma unroll
+    for (int i = 0; i < 55; i++) {
+        if (b[i]=='v'&&b[i+1]=='s'&&b[i+2]=='s'&&b[i+3]=='a'&&b[i+4]=='d'&&b[i+5]=='m'&&b[i+6]=='i'&&b[i+7]=='n') return 1;
+        if (b[i]=='b'&&b[i+1]=='c'&&b[i+2]=='d'&&b[i+3]=='e'&&b[i+4]=='d'&&b[i+5]=='i'&&b[i+6]=='t') return 1;
+        if (b[i]=='w'&&b[i+1]=='b'&&b[i+2]=='a'&&b[i+3]=='d'&&b[i+4]=='m'&&b[i+5]=='i'&&b[i+6]=='n') return 1;
+        if (b[i]=='s'&&b[i+1]=='h'&&b[i+2]=='a'&&b[i+3]=='d'&&b[i+4]=='o'&&b[i+5]=='w'&&b[i+6]=='c'&&b[i+7]=='o'&&b[i+8]=='p') return 1;
+    }
+    return 0;
+}
+"""
+
+    # The kill/block action only runs in enforce mode; audit still emits the event.
+    _exec_block = (
+        "u8 _blk = 1; blocked_pids.update(&pid, &_blk); "
+        "if (ppid > 0) blocked_pids.update(&ppid, &_blk); "
+        "bpf_send_signal(SIGKILL);"
+    ) if enforce else ""
+
+    _execve_kw_check = """
+    char _fn[64] = {};
+    bpf_probe_read_user_str(&_fn, sizeof(_fn), (void *)args->filename);
+    char _a1[64] = {};
+    const char *_argp = NULL;
+    bpf_probe_read_user(&_argp, sizeof(_argp), &args->argv[1]);
+    if (_argp) bpf_probe_read_user_str(&_a1, sizeof(_a1), _argp);
+    if (__is_backup_destruct(_fn) || __is_backup_destruct(_a1)) {
+        struct exec_event_t xev = {};
+        xev.pid = pid; xev.ppid = ppid; xev.ts = ts;
+        bpf_get_current_comm(&xev.comm, sizeof(xev.comm));
+        __builtin_memcpy(&xev.arg, &_fn, sizeof(xev.arg));
+        exec_events.perf_submit(args, &xev, sizeof(xev));
+        """ + _exec_block + """
+    }
 """
     return f"""
 #include <uapi/linux/ptrace.h>
@@ -709,8 +799,10 @@ BPF_HASH(proc_profiles, u32, struct proc_profile_t, 10000);
 BPF_PERF_OUTPUT(rename_events);
 BPF_PERF_OUTPUT(write_events);
 BPF_PERF_OUTPUT(behavior_events);
+BPF_PERF_OUTPUT(exec_events);
 
 #define VELOCITY_THRESHOLD   3
+#define SIGKILL              9
 #define WINDOW_NS           (3ULL * 1000000000ULL)
 #define WRITE_WINDOW_NS     (5ULL * 1000000000ULL)
 #define WRITE_BURST_THRESH   50
@@ -736,6 +828,13 @@ struct behavior_event_t {{
     u64 files_deleted; u64 files_renamed;
     u64 unique_dirs; u64 child_procs;
 }};
+struct exec_event_t {{
+    u32 pid; u32 ppid; char comm[16]; u64 ts;
+    char arg[64];
+}};
+
+// Feature 4: backup-destruction keyword matcher (inserted top-level).
+{_kw_matcher}
 
 // ── Score calculator ──────────────────────────────────────────────────────
 static inline u8 __calc_score(struct proc_profile_t *p) {{
@@ -934,6 +1033,8 @@ TRACEPOINT_PROBE(syscalls, sys_enter_execve) {{
         p->score = __calc_score(p);
         proc_profiles.update(&ppid, p);
     }}
+    // Feature 4: block backup-destruction tooling at exec time.
+    {_execve_kw_check}
     return 0;
 }}
 
@@ -1221,6 +1322,41 @@ def run_sensor(
                         pass
                     _contain_q.put_nowait((pid, comm))
     b["behavior_events"].open_perf_buffer(_handle_behavior, page_cnt=256)
+
+    def _handle_exec(cpu, data, size):
+        ev   = b["exec_events"].event(data)
+        pid  = ev.pid
+        ppid = ev.ppid
+        comm = ev.comm.decode(errors="replace").rstrip("\x00")
+        arg  = ev.arg.decode(errors="replace").rstrip("\x00")
+        ts   = time.time()
+        # Kernel already matched a backup-destruction keyword. Reconstruct the
+        # userspace event (source of truth); fall back to a direct event if the
+        # single argv buffer we carried isn't enough for the userspace matcher.
+        event = engine.observe_execve(pid, ppid, comm, [arg], ts)
+        if event is None:
+            engine._frozen_pids.add(ppid)
+            event = engine._make_event(
+                "BACKUP_DESTRUCTION", "CRITICAL", pid, ppid, comm, "", "", ts,
+                extra={"trigger": "execve", "decided_in": "kernel",
+                       "arg": arg, "kill_parent": ppid},
+            )
+        # SIGKILL the PARENT — the process that spawned the destruction tool.
+        if enforce and ppid > 0:
+            try:
+                os.kill(ppid, 9)
+            except OSError:
+                pass
+            try:
+                b["blocked_pids"][b["blocked_pids"].Key(ppid)] = b["blocked_pids"].Leaf(1)
+            except Exception:
+                pass
+            _contain_q.put_nowait((ppid, comm))
+        try:
+            _score_q.put_nowait((event, ppid, ""))
+        except Exception:
+            _emit(event)
+    b["exec_events"].open_perf_buffer(_handle_exec, page_cnt=64)
     print("[ebpf] probes loaded — listening...")
 
     # Warm up
@@ -1496,6 +1632,37 @@ def _selftest() -> int:
     check("bpf source declares write_offset map", "write_offset" in _src1)
     check("bpf source defines NONSEQ_THRESH", "NONSEQ_THRESH" in _src1)
     check("bpf source carries silent_enc flag", "silent_enc" in _src1)
+
+    # ── Feature 4: execve backup-destruction blocking ────────────────
+    print("execve backup-destruction blocking")
+    enge4 = DetectionEngine("t", ["/tmp"], self_pid=1)
+    ev_v = enge4.observe_execve(200, 150, "sh",
+                                ["vssadmin", "delete", "shadows", "/all", "/quiet"], ts=1.0)
+    check("vssadmin -> BACKUP_DESTRUCTION",
+          ev_v is not None and ev_v["event_type"] == "BACKUP_DESTRUCTION")
+    check("backup-destruction is CRITICAL", ev_v is not None and ev_v["severity"] == "CRITICAL")
+    check("execve marks parent for kill",
+          ev_v is not None and ev_v["details"]["kill_parent"] == 150)
+    check("execve freezes parent pid", 150 in enge4._frozen_pids)
+    for kw in ("bcdedit", "wbadmin", "shadowcopy"):
+        check(f"{kw} detected",
+              enge4.observe_execve(201, 150, "sh", [f"/usr/bin/{kw}", "x"], ts=1.0) is not None)
+    check("keyword inside a path argument detected",
+          enge4.observe_execve(203, 150, "sh", ["/c/Windows/System32/vssadmin.exe"], ts=1.0) is not None)
+    check("benign execve -> None",
+          enge4.observe_execve(202, 150, "bash", ["ls", "-la", "/home"], ts=1.0) is None)
+    check("empty argv -> None", enge4.observe_execve(204, 150, "sh", [], ts=1.0) is None)
+    engself = DetectionEngine("t", ["/tmp"], self_pid=9)
+    check("own pid execve ignored",
+          engself.observe_execve(9, 1, "x", ["vssadmin", "delete"], ts=1.0) is None)
+    _src4 = build_bpf(enforce=True, lsm=True)
+    check("bpf source declares exec_events", "exec_events" in _src4)
+    check("bpf source has backup-destruct matcher", "__is_backup_destruct" in _src4)
+    check("bpf source sends SIGKILL on match", "bpf_send_signal(SIGKILL)" in _src4)
+    check("bprm_check LSM hook present (enforce+lsm)", "bprm_check_security" in _src4)
+    _src4a = build_bpf(enforce=False, lsm=False)
+    check("audit build still detects (matcher present)", "__is_backup_destruct" in _src4a)
+    check("audit build does not send SIGKILL", "bpf_send_signal(SIGKILL)" not in _src4a)
 
     # ── BPF source generation ─────────────────────────────────────────
     print("BPF source generation (all variants compile to text)")
