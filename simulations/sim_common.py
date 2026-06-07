@@ -47,7 +47,7 @@ def populate_corpus(root: str, dirs: int = 8, depth: int = 4,
     """Create a synthetic file tree under root. Returns list of created files."""
     root_p = Path(root)
     root_p.mkdir(parents=True, exist_ok=True)
-    if any(root_p.iterdir()):
+    if any(p for p in root_p.iterdir() if not p.name.startswith(".")):
         raise ValueError(
             f"populate_corpus: target directory {root!r} is non-empty — "
             "pass an empty or non-existent directory to avoid overwriting real files."
