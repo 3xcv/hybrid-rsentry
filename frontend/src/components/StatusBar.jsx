@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 function stamp() {
   const d = new Date();
   const p = n => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 export default function StatusBar({ connected, hostCount, eventRate }) {
