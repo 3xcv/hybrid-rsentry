@@ -481,7 +481,7 @@ class DetectionEngine:
 # Canary seeding
 # ---------------------------------------------------------------------------
 
-ATTRACTIVE_EXTS = (".docx", ".xlsx", ".pdf", ".db", ".vmdk")
+ATTRACTIVE_EXTS = (".docx", ".xlsx", ".pdf", ".db", ".vmdk", ".kdbx", ".edb", ".pst")
 
 def seed_canaries(
     watch_dirs: List[str],
