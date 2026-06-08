@@ -229,15 +229,17 @@ async def _ack_alert_by_id(alert_id: str):
         )
         alert = result.scalar_one_or_none()
         if alert:
+            host_id = alert.host_id
             alert.acknowledged = True
             alert.resolved_at = datetime.now(timezone.utc)
             await db.commit()
             _redis().publish("rsentry:alerts", json.dumps({
                 "type": "alert_acked",
                 "alert_id": alert_id,
-                "host_id": alert.host_id,
+                "host_id": host_id,
                 "reason": "AI_BENIGN",
             }))
+            update_host_risk.delay(host_id)
 
 
 @celery_app.task(name="publish_markov_analysis")
@@ -283,6 +285,9 @@ def auto_ack_containment(host_id: str):
         }))
 
     _run(_inner())
+    # Recalculate risk AFTER acknowledgment is committed so the score reflects
+    # the now-cleared alerts rather than racing with the acknowledgment write.
+    update_host_risk.delay(host_id)
 
 
 @celery_app.task(name="analyze_health_ai")
@@ -296,7 +301,10 @@ def analyze_health_ai(recent_events: list):
 
 @celery_app.task(name="auto_ack_by_event")
 def auto_ack_by_event(event_id: str):
+    _host_id = None
+
     async def _inner():
+        nonlocal _host_id
         _, SessionLocal = _get_engine()
         async with SessionLocal() as db:
             result = await db.execute(
@@ -307,14 +315,17 @@ def auto_ack_by_event(event_id: str):
             )
             alert = result.scalar_one_or_none()
             if alert:
+                _host_id = alert.host_id
                 alert.acknowledged = True
                 alert.resolved_at = datetime.now(timezone.utc)
                 await db.commit()
                 _redis().publish("rsentry:alerts", json.dumps({
                     "type": "alert_acked",
                     "alert_id": str(alert.id),
-                    "host_id": alert.host_id,
+                    "host_id": _host_id,
                     "reason": "AI_BENIGN",
                 }))
 
     _run(_inner())
+    if _host_id:
+        update_host_risk.delay(_host_id)

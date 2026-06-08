@@ -137,10 +137,11 @@ async def ingest_event(payload: EventCreate, db: AsyncSession = Depends(get_db))
         # Markov event that would have been an alert — publish pre-built analysis to AI panel
         publish_markov_analysis.delay(str(event.id))
 
-    # When containment completes, auto-acknowledge all CRITICAL alerts for this host
+    # When containment completes, auto-acknowledge all CRITICAL alerts for this host.
+    # update_host_risk is called at the END of auto_ack_containment (after the commit)
+    # so the recalculation always sees the acknowledged state.
     if payload.event_type == EventType.CONTAINMENT_COMPLETE:
         auto_ack_containment.delay(payload.host_id)
-        update_host_risk.delay(payload.host_id)
 
     return event
 

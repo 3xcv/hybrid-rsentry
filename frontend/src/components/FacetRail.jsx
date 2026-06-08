@@ -41,7 +41,7 @@ function FacetGroup({ field, values, colorFor, activeFilters, onToggle }) {
 
 const SEV_COLOR = { CRITICAL: 'var(--crit)', HIGH: 'var(--high)', MEDIUM: 'var(--med)', LOW: 'var(--low)' };
 
-export default function FacetRail({ alerts, activeFilters, onToggle }) {
+export default function FacetRail({ alerts, activeFilters, onToggle, onClose }) {
   const [search, setSearch] = useState('');
 
   const groups = useMemo(() => [
@@ -66,14 +66,26 @@ export default function FacetRail({ alerts, activeFilters, onToggle }) {
 
   return (
     <aside style={{ width: 248, flexShrink: 0, background: 'var(--panel)', borderRight: '1px solid var(--border)', overflowY: 'auto', paddingBottom: 30 }}>
-      <div style={{ margin: '10px 12px 8px', height: 28, display: 'flex', alignItems: 'center', gap: 7, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '0 9px' }}>
-        <i className="fa-solid fa-filter" style={{ color: 'var(--muted)', fontSize: 11 }} />
-        <input
-          placeholder="Filter fields…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          style={{ flex: 1, background: 'transparent', border: 0, outline: 0, color: 'var(--text)', fontSize: 12, fontFamily: 'var(--sans)' }}
-        />
+      <div style={{ margin: '10px 12px 8px', display: 'flex', alignItems: 'center', gap: 7 }}>
+        <div style={{ flex: 1, height: 28, display: 'flex', alignItems: 'center', gap: 7, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '0 9px' }}>
+          <i className="fa-solid fa-filter" style={{ color: 'var(--muted)', fontSize: 11 }} />
+          <input
+            placeholder="Filter fields…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ flex: 1, background: 'transparent', border: 0, outline: 0, color: 'var(--text)', fontSize: 12, fontFamily: 'var(--sans)' }}
+          />
+        </div>
+        {onClose && (
+          <button
+            onClick={onClose}
+            title="Close filters"
+            style={{ flexShrink: 0, width: 28, height: 28, display: 'grid', placeItems: 'center', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--muted)', cursor: 'pointer' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--panel-2)'; e.currentTarget.style.color = 'var(--text)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--muted)'; }}>
+            <i className="fa-solid fa-xmark" style={{ fontSize: 12 }} />
+          </button>
+        )}
       </div>
       {visible.map(g => (
         <FacetGroup

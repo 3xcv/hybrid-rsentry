@@ -16,6 +16,7 @@ export default function AlertsPage({ newAlert, liveAiResult, liveEvent }) {
   const [facets,   setFacets]   = useState({});
   const [page,     setPage]     = useState(0);
   const [spinning, setSpinning] = useState(false);
+  const [railOpen, setRailOpen] = useState(true);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -81,6 +82,12 @@ export default function AlertsPage({ newAlert, liveAiResult, liveEvent }) {
       {/* Query bar */}
       <div style={{ height: 44, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', background: 'var(--panel)', borderBottom: '1px solid var(--border)' }}>
         <div style={{ flex: 1, height: 30, display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '0 10px' }}>
+          <button
+            onClick={() => setRailOpen(v => !v)}
+            title={railOpen ? 'Hide filters' : 'Show filters'}
+            style={{ flexShrink: 0, width: 22, height: 22, display: 'grid', placeItems: 'center', borderRadius: 4, border: 'none', background: railOpen ? 'var(--accent-dim)' : 'transparent', color: railOpen ? 'var(--accent)' : 'var(--muted)', cursor: 'pointer' }}>
+            <i className="fa-solid fa-sliders" style={{ fontSize: 11 }} />
+          </button>
           <i className="fa-solid fa-magnifying-glass" style={{ color: 'var(--muted)', fontSize: 12 }} />
           <input
             value={query}
@@ -107,7 +114,7 @@ export default function AlertsPage({ newAlert, liveAiResult, liveEvent }) {
 
       {/* 3-column body */}
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        <FacetRail alerts={alerts} activeFilters={facets} onToggle={handleFacetToggle} />
+        {railOpen && <FacetRail alerts={alerts} activeFilters={facets} onToggle={handleFacetToggle} onClose={() => setRailOpen(false)} />}
 
         <section style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <MetricsStrip alerts={filtered} events={events} />
@@ -129,13 +136,15 @@ export default function AlertsPage({ newAlert, liveAiResult, liveEvent }) {
           </div>
         </section>
 
-        <DetailFlyout
-          alert={selected}
-          liveEvent={liveEvent}
-          liveAiResult={liveAiResult}
-          onClose={() => setSelected(null)}
-          onRefresh={fetchAll}
-        />
+        {selected && (
+          <DetailFlyout
+            alert={selected}
+            liveEvent={liveEvent}
+            liveAiResult={liveAiResult}
+            onClose={() => setSelected(null)}
+            onRefresh={fetchAll}
+          />
+        )}
       </div>
     </div>
   );

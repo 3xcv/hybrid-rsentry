@@ -95,7 +95,7 @@ async function exportAsPDF(filterParams) {
   ].filter(Boolean).join('   |   ');
   doc.setFontSize(8);
   doc.setTextColor(140);
-  doc.text(`Filters → ${filterLine}`, 14, 32);
+  doc.text(`Filters: ${filterLine}`, 14, 32);
 
   // Stat cards (correctly labeled)
   const total = rich.length;
@@ -219,7 +219,7 @@ async function exportAsPDF(filterParams) {
 
   autoTable(doc, {
     startY: 22,
-    head: [['Time (UTC)', 'Sev', 'Event Type', 'Host', 'Process', 'File', 'ΔH', 'Lineage', 'Combined', 'Canary', 'Status']],
+    head: [['Time (UTC)', 'Sev', 'Event Type', 'Host', 'Process', 'File', 'Entr', 'Lineage', 'Combined', 'Canary', 'Status']],
     body: rich.map(a => {
       const ev = a.event || {};
       const score = ev.details?.combined_score;
@@ -314,7 +314,7 @@ async function exportAsPDF(filterParams) {
       let yOff = 32;
       if (ev.event_type === 'CANARY_TOUCHED') {
         if (d.sub_type) {
-          doc.text(`Action: ${d.sub_type}${d.dest ? `   →   ${d.dest}` : ''}`, 22, y + yOff);
+          doc.text(`Action: ${d.sub_type}${d.dest ? `  ->  ${d.dest}` : ''}`, 22, y + yOff);
           yOff += 4;
         }
       } else if (ev.event_type === 'ENTROPY_SPIKE') {
@@ -327,7 +327,7 @@ async function exportAsPDF(filterParams) {
           yOff += 4;
         }
         if (d.ancestors?.length) {
-          doc.text(`Ancestors: ${d.ancestors.slice(0, 3).join(' → ')}`, 22, y + yOff);
+          doc.text(`Ancestors: ${d.ancestors.slice(0, 3).join(' > ')}`, 22, y + yOff);
           yOff += 4;
         }
       }
@@ -378,17 +378,28 @@ async function exportAsPDF(filterParams) {
     doc.text(`Page ${i} of ${totalPages}`, W - 24, H - 6);
   }
 
-  doc.save(`rsentry_report_${Date.now()}.pdf`);
+  triggerDownload(doc.output('blob'), `rsentry_report_${Date.now()}.pdf`);
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.style.display = 'none';
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  // Keep anchor and URL alive for 5 s so Firefox has time to start the download
+  // before the object URL is revoked.
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 5000);
 }
 
 function exportAllAsJSON(alerts) {
   const blob = new Blob([JSON.stringify(alerts, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `rsentry_report_${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  triggerDownload(blob, `rsentry_report_${Date.now()}.json`);
 }
 
 // ─── Component ──────────────────────────────────────────────────────────
@@ -418,12 +429,7 @@ export default function ReportsPage() {
     try {
       const { data } = await forensicExport(id);
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `forensic_${id.slice(0, 8)}_${Date.now()}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerDownload(blob, `forensic_${id.slice(0, 8)}_${Date.now()}.json`);
     } catch (err) { console.error(err); }
     finally { setExporting(null); }
   };
