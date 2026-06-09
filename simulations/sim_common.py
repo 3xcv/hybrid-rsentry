@@ -145,6 +145,14 @@ def _simulate_file(path: str, profile: Profile) -> Optional[str]:
     """
     Simulate encryption of one file according to profile.mode.
     Returns new path on success, None on error.
+
+    Write geometry: every mode overwrites the file IN PLACE (same inode) and
+    then issues a real ``os.rename()`` to append the family extension. The rename
+    is what real Linux ransomware does to "claim" an encrypted file, and it is
+    the syscall the eBPF ``kprobe__vfs_rename`` probe captures. The earlier
+    ``write_bytes(new_file) + unlink(original)`` pattern created a FRESH inode
+    written sequentially and emitted NO rename, so neither the rename/extension
+    detector nor the write-offset detector ever fired on the live kernel.
     """
     p = Path(path)
     if not p.is_file():
@@ -154,38 +162,35 @@ def _simulate_file(path: str, profile: Profile) -> Optional[str]:
     except OSError:
         return None
 
+    if profile.mode == "two_pass":
+        # LockBit 5.0 two-pass write: a quick partial pass then a thorough pass,
+        # BOTH overwriting the original in place (same inode). The original file
+        # MUST survive until the final os.rename — never unlink before the rename
+        # or the rename has nothing to move.
+        partial = _encrypt_percent(data, 30)
+        full = _encrypt_full(partial)
+        new_path = str(p) + "." + profile.ext_fn()
+        try:
+            p.write_bytes(partial)            # pass 1 — in-place overwrite
+            p.write_bytes(full)               # pass 2 — in-place overwrite
+            os.rename(str(p), new_path)       # rename → vfs_rename, 16-char ext
+        except OSError:
+            return None
+        return new_path
+
     if profile.mode == "full":
         enc = _encrypt_full(data)
     elif profile.mode == "intermittent":
         enc = _encrypt_intermittent(data, profile.block, profile.step)
     elif profile.mode == "percent":
         enc = _encrypt_percent(data, profile.percent)
-    elif profile.mode == "two_pass":
-        # Pass 1: write partial to intermediate file then delete original
-        partial = _encrypt_percent(data, 30)
-        partial_path = Path(str(p) + ".partial")
-        try:
-            partial_path.write_bytes(partial)
-            p.unlink()
-        except OSError:
-            partial_path.unlink(missing_ok=True)
-            return None
-        # Pass 2: write full encryption and delete intermediate
-        final_path = str(partial_path) + "." + profile.ext_fn()
-        try:
-            Path(final_path).write_bytes(_encrypt_full(partial))
-            partial_path.unlink()
-        except OSError:
-            partial_path.unlink(missing_ok=True)
-            return None
-        return final_path
     else:
         enc = _encrypt_full(data)
 
     new_path = str(p) + "." + profile.ext_fn()
     try:
-        Path(new_path).write_bytes(enc)
-        p.unlink()
+        p.write_bytes(enc)                    # in-place overwrite (same inode)
+        os.rename(str(p), new_path)           # rename → vfs_rename fires
     except OSError:
         return None
     return new_path
@@ -249,12 +254,22 @@ class Manifest:
 # ---------------------------------------------------------------------------
 
 def run_attack(root: str, profile: Profile, traversal: str = "dfs",
-               skip_aaa: bool = False) -> Manifest:
+               skip_aaa: bool = False, max_files: Optional[int] = None,
+               delay: Optional[float] = None) -> Manifest:
     manifest = Manifest()
     manifest.t_start = time.perf_counter()
 
     targets = enumerate_targets(root, traversal, skip_aaa=skip_aaa)
     targets = _prioritise(targets, profile.priority_exts)
+    # Safety cap: bound the number of files touched per run (avoids the VM hang a
+    # very large write/rename storm caused). None == no cap (legacy behaviour).
+    if max_files is not None:
+        targets = targets[:max_files]
+
+    # Per-file pacing: --delay overrides the profile default. Used by the live
+    # detection test to keep the sim alive long enough for the audit-mode
+    # SIGSTOP response to land on a running PID.
+    eff_delay = profile.delay if delay is None else delay
 
     for path in targets:
         new_path = _simulate_file(path, profile)
@@ -262,8 +277,8 @@ def run_attack(root: str, profile: Profile, traversal: str = "dfs",
             manifest.encrypted.append(new_path)
         else:
             manifest.errors.append(path)
-        if profile.delay > 0:
-            time.sleep(profile.delay)
+        if eff_delay > 0:
+            time.sleep(eff_delay)
 
     # Drop ransom note in root
     note = os.path.join(root, profile.note_name)
@@ -290,6 +305,12 @@ def add_common_args(ap: argparse.ArgumentParser) -> None:
                     help="keep encrypted files after run (default: restore)")
     ap.add_argument("--skip-aaa",   action="store_true",
                     help="skip AAA_/zzz_ canary files")
+    ap.add_argument("--max-files",  type=int, default=None,
+                    help="cap the number of files touched per run (safety bound; "
+                         "keep <=50 on a VM to avoid a write/rename-storm hang)")
+    ap.add_argument("--delay",      type=float, default=None,
+                    help="per-file delay in seconds (overrides the profile "
+                         "default; lets a live sensor act on a running PID)")
 
 
 def main_for(profile: Profile, ap: argparse.ArgumentParser) -> int:
@@ -319,7 +340,9 @@ def main_for(profile: Profile, ap: argparse.ArgumentParser) -> int:
     try:
         manifest = run_attack(root, profile,
                               traversal=args.traversal,
-                              skip_aaa=args.skip_aaa)
+                              skip_aaa=args.skip_aaa,
+                              max_files=args.max_files,
+                              delay=args.delay)
     finally:
         if not args.no_restore:
             _restore_corpus(root, backup)
