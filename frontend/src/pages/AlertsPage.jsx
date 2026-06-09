@@ -11,7 +11,7 @@ export default function AlertsPage({ newAlert, liveAiResult, liveEvent }) {
   const [events,   setEvents]   = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [selected, setSelected] = useState(null);
-  const [filter,   setFilter]   = useState('active');
+  const [filter,   setFilter]   = useState('all');
   const [query,    setQuery]    = useState('');
   const [facets,   setFacets]   = useState({});
   const [page,     setPage]     = useState(0);

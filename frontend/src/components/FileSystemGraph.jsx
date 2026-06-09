@@ -4,11 +4,15 @@ import { getEvents } from '../api/client';
 
 // ─── Graph builder ────────────────────────────────────────────────────────
 
+const SEV_ORDER = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+
 function emptyStats() {
-  return { alertCount: 0, maxEntropy: 0, canaryHit: false, lastEventType: null };
+  return { maxSeverity: null, alertCount: 0, maxEntropy: 0, canaryHit: false, lastEventType: null };
 }
 function mergeStats(s, ev) {
-  if (['HIGH', 'CRITICAL'].includes(ev.severity)) s.alertCount++;
+  const order = SEV_ORDER[ev.severity] || 0;
+  if (order >= 2) s.alertCount++;
+  if (order > (SEV_ORDER[s.maxSeverity] || 0)) s.maxSeverity = ev.severity;
   if ((ev.entropy_delta || 0) > s.maxEntropy) s.maxEntropy = ev.entropy_delta;
   if (ev.canary_hit) s.canaryHit = true;
   s.lastEventType = ev.event_type;
@@ -44,12 +48,14 @@ function buildGraph(events) {
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function nodeColor(n, highlightPaths) {
-  if (highlightPaths?.has(n.id)) return '#4f8cc9';
-  if (n.isCanary && n.stats.canaryHit) return '#f87171';
-  if (n.isCanary)                      return '#67e8f9';
-  if (n.stats.alertCount > 0)          return '#fb923c';
-  if (n.stats.maxEntropy > 3.5)        return '#fbbf24';
-  if (n.isRoot)                        return '#a3a6b0';
+  if (highlightPaths?.has(n.id))           return '#4f8cc9';  // selected path
+  if (n.isCanary && n.stats.canaryHit)    return '#d8503c';  // canary hit → crit red
+  if (n.isCanary)                          return '#67e8f9';  // canary → cyan
+  if (n.stats.maxSeverity === 'CRITICAL') return '#d8503c';  // --crit
+  if (n.stats.maxSeverity === 'HIGH')     return '#d6873a';  // --high
+  if (n.stats.maxSeverity === 'MEDIUM')   return '#c9b13f';  // --med
+  if (n.stats.maxEntropy > 3.5)           return '#fbbf24';  // high entropy
+  if (n.isRoot)                           return '#a3a6b0';
   return n.isFile ? '#4b5568' : '#374151';
 }
 
@@ -137,9 +143,10 @@ export default function FileSystemGraph({ highlightPath, newEvent, hostId }) {
       merge.append('feMergeNode').attr('in', 'glow');
       merge.append('feMergeNode').attr('in', 'SourceGraphic');
     };
-    addGlow('glow-red',    '#f87171', 5);
+    addGlow('glow-crit',   '#d8503c', 5);
+    addGlow('glow-high',   '#d6873a', 4);
+    addGlow('glow-med',    '#c9b13f', 3);
     addGlow('glow-cyan',   '#67e8f9', 4);
-    addGlow('glow-orange', '#fb923c', 4);
     addGlow('glow-blue',   '#4f8cc9', 6);
     addGlow('glow-yellow', '#fbbf24', 3);
 
@@ -200,15 +207,15 @@ export default function FileSystemGraph({ highlightPath, newEvent, hostId }) {
     // Outer glow ring for highlighted / alert nodes
     nodeSel.append('circle')
       .attr('r', d => {
-        if (hPaths?.has(d.id)) return nodeRadius(d, hPaths) + 6;
+        if (hPaths?.has(d.id))               return nodeRadius(d, hPaths) + 6;
         if (d.isCanary && d.stats.canaryHit) return nodeRadius(d, hPaths) + 5;
         if (d.stats.alertCount > 0)          return nodeRadius(d, hPaths) + 4;
         return 0;
       })
       .attr('fill', 'none')
       .attr('stroke', d => nodeColor(d, hPaths))
-      .attr('stroke-width', 1)
-      .attr('stroke-opacity', 0.35)
+      .attr('stroke-width', 1.2)
+      .attr('stroke-opacity', 0.4)
       .attr('stroke-dasharray', d => hPaths?.has(d.id) ? '3,3' : null);
 
     // Main circle
@@ -217,11 +224,13 @@ export default function FileSystemGraph({ highlightPath, newEvent, hostId }) {
       .attr('fill', d => nodeColor(d, hPaths))
       .attr('fill-opacity', d => d.isFile ? 0.75 : 0.9)
       .attr('filter', d => {
-        if (hPaths?.has(d.id))              return 'url(#glow-blue)';
-        if (d.isCanary && d.stats.canaryHit) return 'url(#glow-red)';
-        if (d.isCanary)                      return 'url(#glow-cyan)';
-        if (d.stats.alertCount > 0)          return 'url(#glow-orange)';
-        if (d.stats.maxEntropy > 3.5)        return 'url(#glow-yellow)';
+        if (hPaths?.has(d.id))                   return 'url(#glow-blue)';
+        if (d.isCanary && d.stats.canaryHit)     return 'url(#glow-crit)';
+        if (d.isCanary)                           return 'url(#glow-cyan)';
+        if (d.stats.maxSeverity === 'CRITICAL')  return 'url(#glow-crit)';
+        if (d.stats.maxSeverity === 'HIGH')      return 'url(#glow-high)';
+        if (d.stats.maxSeverity === 'MEDIUM')    return 'url(#glow-med)';
+        if (d.stats.maxEntropy > 3.5)            return 'url(#glow-yellow)';
         return null;
       });
 
@@ -330,11 +339,12 @@ export default function FileSystemGraph({ highlightPath, newEvent, hostId }) {
       {/* Legend + node count */}
       <div style={{ position: 'absolute', bottom: 8, left: 8, display: 'flex', gap: 10, flexWrap: 'wrap', pointerEvents: 'none' }}>
         {[
-          { color: '#4f8cc9', label: 'Selected path' },
-          { color: '#f87171', label: 'Canary hit' },
+          { color: '#4f8cc9', label: 'Selected' },
+          { color: '#d8503c', label: 'Critical' },
+          { color: '#d6873a', label: 'High' },
+          { color: '#c9b13f', label: 'Medium' },
           { color: '#67e8f9', label: 'Canary' },
-          { color: '#fb923c', label: 'Alert' },
-          { color: '#fbbf24', label: 'High entropy' },
+          { color: '#fbbf24', label: 'Entropy' },
         ].map(({ color, label }) => (
           <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block' }} />

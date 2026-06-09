@@ -3,7 +3,7 @@ alerts.py — Alert management endpoints + evidence retrieval.
 """
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -41,7 +41,8 @@ async def list_alerts(
 
 @router.get("/counts")
 async def alert_counts(db: AsyncSession = Depends(get_db)):
-    """Return exact active (unacknowledged) alert counts by severity — no limit."""
+    """Return active (unacknowledged) counts and 24h total counts by severity."""
+    # Active (unacknowledged) counts
     sev_rows = (await db.execute(
         select(Alert.severity, func.count(Alert.id))
         .where(Alert.acknowledged == False)  # noqa: E712
@@ -51,6 +52,21 @@ async def alert_counts(db: AsyncSession = Depends(get_db)):
     for sev, count in sev_rows:
         counts[sev.value] = count
     counts["TOTAL"] = sum(counts[sev.value] for sev in Severity)
+
+    # 24h total counts (all alerts regardless of ack status)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    sev_24h_rows = (await db.execute(
+        select(Alert.severity, func.count(Alert.id))
+        .where(Alert.created_at >= cutoff)
+        .group_by(Alert.severity)
+    )).all()
+    counts_24h: dict = {sev.value: 0 for sev in Severity}
+    for sev, cnt in sev_24h_rows:
+        counts_24h[sev.value] = cnt
+    counts["CRITICAL_24H"] = counts_24h.get("CRITICAL", 0)
+    counts["HIGH_24H"]     = counts_24h.get("HIGH", 0)
+    counts["MEDIUM_24H"]   = counts_24h.get("MEDIUM", 0)
+    counts["TOTAL_24H"]    = sum(counts_24h.values())
     return counts
 
 
@@ -97,17 +113,15 @@ async def list_alerts_with_events(
             "acknowledged": alert.acknowledged,
             "created_at":   alert.created_at.isoformat() if alert.created_at else None,
             "resolved_at":  alert.resolved_at.isoformat() if alert.resolved_at else None,
-            "event": {
-                "event_type":    event.event_type.value,
-                "pid":           event.pid,
-                "process_name":  event.process_name,
-                "file_path":     event.file_path,
-                "lineage_score": event.lineage_score,
-                "entropy_delta": event.entropy_delta,
-                "canary_hit":    event.canary_hit,
-                "timestamp":     event.timestamp.isoformat() if event.timestamp else None,
-                "details":       event.details or {},
-            },
+            "event_type":   event.event_type.value,
+            "pid":          event.pid,
+            "process_name": event.process_name,
+            "file_path":    event.file_path,
+            "lineage_score":event.lineage_score,
+            "entropy_delta":event.entropy_delta,
+            "canary_hit":   event.canary_hit,
+            "timestamp":    event.timestamp.isoformat() if event.timestamp else None,
+            "details":      event.details or {},
         })
     return result
 

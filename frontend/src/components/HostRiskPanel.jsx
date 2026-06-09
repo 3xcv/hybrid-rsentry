@@ -44,7 +44,7 @@ export default function HostRiskPanel() {
 
   useEffect(() => {
     fetchAll();
-    const interval = setInterval(fetchAll, 15000);
+    const interval = setInterval(fetchAll, 5000);
     return () => clearInterval(interval);
   }, [fetchAll]);
 
@@ -114,8 +114,8 @@ export default function HostRiskPanel() {
 
               {/* Alert / event counts */}
               <div className="text-right shrink-0">
-                <p className="text-gray-500 text-[10px]">Alerts</p>
-                <p className="text-white text-sm font-bold">{risk?.alert_count ?? '—'}</p>
+                <p className="text-gray-500 text-[10px]">Total Alerts</p>
+                <p className="text-white text-sm font-bold">{risk?.total_alert_count ?? risk?.alert_count ?? '—'}</p>
               </div>
             </div>
           );

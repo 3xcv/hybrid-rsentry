@@ -95,6 +95,15 @@ function ErrorCard({ analysis }) {
   );
 }
 
+const HEALTH_STAGES = [
+  { label: 'Collecting system data…',    icon: 'fa-database' },
+  { label: 'Queuing AI analysis…',       icon: 'fa-brain' },
+  { label: 'Analyzing events & alerts…', icon: 'fa-magnifying-glass-chart' },
+  { label: 'Evaluating threat posture…', icon: 'fa-shield-halved' },
+  { label: 'Generating assessment…',     icon: 'fa-file-waveform' },
+];
+const STAGE_DELAYS_MS = [0, 700, 2000, 4000, 6500];
+
 export default function AIAnalystPage({
   connected,
   analyses,
@@ -106,16 +115,24 @@ export default function AIAnalystPage({
 }) {
   const [tab, setTab] = useState('events');
   const [healthLoading, setHealthLoading] = useState(false);
+  const [healthStage, setHealthStage] = useState(0);
   const healthPendingRef = useRef(false);
+  const stageTimersRef = useRef([]);
 
   const statusInfo = health ? (STATUS_COLORS[health.status] || STATUS_COLORS.UNKNOWN) : null;
 
   const pendingList = Object.values(pendingEvents || {});
   const displayAnalyses = analyses || [];
 
-  // When health result arrives via WebSocket, stop the loading spinner
+  function clearStageTimers() {
+    stageTimersRef.current.forEach(clearTimeout);
+    stageTimersRef.current = [];
+  }
+
+  // Stop spinner when health result arrives via WebSocket
   useEffect(() => {
     if (health && healthPendingRef.current) {
+      clearStageTimers();
       setHealthLoading(false);
       healthPendingRef.current = false;
     }
@@ -125,12 +142,18 @@ export default function AIAnalystPage({
     if (healthPendingRef.current) return;
     healthPendingRef.current = true;
     setHealthLoading(true);
+    setHealthStage(0);
+    clearStageTimers();
+    stageTimersRef.current = STAGE_DELAYS_MS.map((delay, i) =>
+      setTimeout(() => setHealthStage(i), delay)
+    );
     try {
       const { data: events } = await getEvents({ limit: 100 });
       await api.post('/api/ai/health', { events });
-      // Keep healthLoading=true — spinner stays until WebSocket result arrives
+      // spinner stays until WebSocket delivers the health result
     } catch (err) {
       console.error('Health check failed:', err);
+      clearStageTimers();
       setHealthLoading(false);
       healthPendingRef.current = false;
     }
@@ -208,10 +231,39 @@ export default function AIAnalystPage({
             <button
               onClick={runHealthCheck}
               disabled={healthLoading}
-              className="w-full mb-4 py-2.5 text-sm bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+              className="w-full mb-3 py-2.5 text-sm bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {healthLoading ? 'Analyzing system…' : 'Run System Health Check'}
+              {healthLoading ? (
+                <>
+                  <div className="w-3.5 h-3.5 rounded-full border-2 border-white border-t-transparent animate-spin shrink-0" />
+                  <i className={`fa-solid ${HEALTH_STAGES[healthStage].icon} text-xs opacity-70`} />
+                  {HEALTH_STAGES[healthStage].label}
+                </>
+              ) : (
+                <>
+                  <i className="fa-solid fa-heart-pulse text-xs" />
+                  Run System Health Check
+                </>
+              )}
             </button>
+
+            {/* Stage progress dots */}
+            {healthLoading && (
+              <div className="flex items-center gap-1.5 mb-4 px-1">
+                {HEALTH_STAGES.map((stage, i) => (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                    <div className={`h-1 w-full rounded-full transition-all duration-500 ${
+                      i < healthStage ? 'bg-indigo-500' :
+                      i === healthStage ? 'bg-indigo-400 animate-pulse' :
+                      'bg-gray-700'
+                    }`} />
+                    {i === healthStage && (
+                      <span className="text-indigo-400 text-xs font-mono">{i + 1}/{HEALTH_STAGES.length}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {health ? (
               <div>

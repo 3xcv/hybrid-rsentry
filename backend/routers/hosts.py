@@ -58,6 +58,11 @@ async def host_risk_summary(host_id: str, db: AsyncSession = Depends(get_db)):
     )
     total_events = event_count_result.scalar_one()
 
+    total_alerts_all_result = await db.execute(
+        select(func.count(Alert.id)).where(Alert.host_id == host_id)
+    )
+    total_alerts_all = total_alerts_all_result.scalar_one()
+
     # Recent critical events
     recent_result = await db.execute(
         select(Event)
@@ -74,6 +79,7 @@ async def host_risk_summary(host_id: str, db: AsyncSession = Depends(get_db)):
         "last_seen": host.last_seen.isoformat(),
         "open_alerts": alert_counts,
         "alert_count": total_alerts,
+        "total_alert_count": total_alerts_all,
         "event_count": total_events,
         "recent_critical_events": [
             {

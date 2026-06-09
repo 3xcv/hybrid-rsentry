@@ -276,7 +276,7 @@ def analyze_alert(event: dict) -> dict:
         return {"analysis_failed": True, "reason": str(exc)[:120], "error_type": "UNKNOWN"}
 
 
-def _build_health_prompt(recent_events: list[dict]) -> str:
+def _build_health_prompt(recent_events: list[dict], contained_hosts: list | None = None, active_alerts: list | None = None) -> str:
     counts: dict = {}
     for e in recent_events:
         key = e.get("event_type", "UNKNOWN")
@@ -286,28 +286,61 @@ def _build_health_prompt(recent_events: list[dict]) -> str:
     critical_count = severities.count("CRITICAL")
     high_count = severities.count("HIGH")
 
-    if not recent_events:
-        return '''{"status":"STABLE","threat_type":"None","behavior_summary":"No recent events to analyze.","risk_level":"LOW","recommendation":"Continue monitoring.","confidence":"LOW"}''' 
+    containment_warning = ""
+    if contained_hosts:
+        host_list = ", ".join(contained_hosts)
+        containment_warning = (
+            f"\n⚠️  ACTIVE CONTAINMENT: host(s) [{host_list}] are currently ISOLATED due to ransomware detection."
+            "\nYou MUST classify as UNDER_ATTACK or RECOVERING — NEVER STABLE when any host is contained.\n"
+        )
 
-    # أعلى entropy delta
+    # Active alert summary
+    alert_section = ""
+    if active_alerts:
+        alert_sev: dict = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        alert_hosts: set = set()
+        for a in active_alerts:
+            sev = a.get("severity", "UNKNOWN")
+            if sev in alert_sev:
+                alert_sev[sev] += 1
+            alert_hosts.add(a.get("host_id", "unknown"))
+        alert_section = (
+            f"\nACTIVE UNACKNOWLEDGED ALERTS: {len(active_alerts)} total"
+            f"\n  CRITICAL: {alert_sev['CRITICAL']}, HIGH: {alert_sev['HIGH']}, MEDIUM: {alert_sev['MEDIUM']}"
+            f"\n  Affected hosts: {', '.join(alert_hosts)}\n"
+        )
+
+    if not recent_events:
+        if contained_hosts:
+            host_list = ", ".join(contained_hosts)
+            return (
+                f'{{"status":"RECOVERING","threat_type":"Ransomware","behavior_summary":'
+                f'"Host(s) {host_list} are actively contained. No new events but containment is active.",'
+                f'"risk_level":"HIGH","recommendation":"Verify containment and begin forensic analysis.","confidence":"HIGH"}}'
+            )
+        if active_alerts and (active_alerts[0].get("severity") in ("CRITICAL", "HIGH") if active_alerts else False):
+            return (
+                f'{{"status":"UNDER_ATTACK","threat_type":"Ransomware","behavior_summary":'
+                f'"Active unacknowledged {active_alerts[0]["severity"]} alerts detected on {active_alerts[0]["host_id"]}. System requires immediate attention.",'
+                f'"risk_level":"{active_alerts[0]["severity"]}","recommendation":"Review and acknowledge active alerts, investigate affected hosts.","confidence":"MEDIUM"}}'
+            )
+        return '{"status":"STABLE","threat_type":"None","behavior_summary":"No recent events to analyze.","risk_level":"LOW","recommendation":"Continue monitoring.","confidence":"LOW"}'
+
     max_entropy = max((e.get("entropy_delta", 0) for e in recent_events), default=0)
 
-    # أكثر process مشبوه
     process_counts: dict = {}
     for e in recent_events:
         p = e.get("process_name", "unknown")
         process_counts[p] = process_counts.get(p, 0) + 1
     top_process = max(process_counts, key=process_counts.get) if process_counts else "unknown"
 
-    # أكثر file path مستهدف
     path_counts: dict = {}
     for e in recent_events:
         p = e.get("file_path") or "none"
         path_counts[p] = path_counts.get(p, 0) + 1
     top_path = max(path_counts, key=path_counts.get) if path_counts else "none"
 
-    return f"""Analyze the overall system health based on recent activity:
-
+    return f"""Analyze the overall system health based on recent activity:{containment_warning}{alert_section}
 Total events (last period): {len(recent_events)}
 Event type breakdown: {json.dumps(counts)}
 CRITICAL events: {critical_count}
@@ -322,7 +355,7 @@ Respond ONLY with this JSON, no extra text:
 {{"status":"STABLE|UNDER_ATTACK|ANOMALOUS|RECOVERING","threat_type":"string","behavior_summary":"2-3 sentences describing overall system state","risk_level":"CRITICAL|HIGH|MEDIUM|LOW","recommendation":"string","confidence":"HIGH|MEDIUM|LOW"}}"""
 
 
-def analyze_system_health(recent_events: list[dict]) -> dict:
+def analyze_system_health(recent_events: list[dict], contained_hosts: list | None = None, active_alerts: list | None = None) -> dict:
     """
     Analyze overall system health using NVIDIA_API_KEY (AI Analyst section).
     Rate-limited on the same key as live events.
@@ -331,7 +364,7 @@ def analyze_system_health(recent_events: list[dict]) -> dict:
         _rate_limit(_RATE_KEY_NVIDIA, NVIDIA_RATE_DELAY)
         result = _call_with_fallback(
             [_get_client_cerebras(), _get_client_events(), _get_client_alerts()],
-            _build_health_prompt(recent_events)
+            _build_health_prompt(recent_events, contained_hosts or [], active_alerts or [])
         )
         return result
     except AuthenticationError:

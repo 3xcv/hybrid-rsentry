@@ -422,7 +422,11 @@ export default function ReportsPage() {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { fetchAlerts(); }, [fetchAlerts]);
+  useEffect(() => {
+    fetchAlerts();
+    const t = setInterval(fetchAlerts, 30000);
+    return () => clearInterval(t);
+  }, [fetchAlerts]);
 
   const handleExportOne = async (id) => {
     setExporting(id);
@@ -479,9 +483,8 @@ export default function ReportsPage() {
       return true;
     });
 
-  const activeAlerts = alerts.filter(a => !a.acknowledged);
-  const activeCritical = activeAlerts.filter(a => a.severity === 'CRITICAL').length;
-  const activeHigh = activeAlerts.filter(a => a.severity === 'HIGH').length;
+  const totalCritical = alerts.filter(a => a.severity === 'CRITICAL').length;
+  const totalHigh = alerts.filter(a => a.severity === 'HIGH').length;
 
   return (
     <div className="flex-1 overflow-auto p-6">
@@ -510,24 +513,24 @@ export default function ReportsPage() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <div className="bg-gray-900 border border-gray-800 rounded-xl px-5 py-4">
-          <p className="text-gray-500 text-xs uppercase tracking-wider">Active Alerts</p>
-          <p className="text-2xl font-bold text-white mt-1">{activeAlerts.length}</p>
-          <p className="text-gray-600 text-xs mt-0.5">unacknowledged</p>
+          <p className="text-gray-500 text-xs uppercase tracking-wider">Total Alerts</p>
+          <p className="text-2xl font-bold text-white mt-1">{alerts.length}</p>
+          <p className="text-gray-600 text-xs mt-0.5">all-time</p>
         </div>
         <div className="bg-gray-900 border border-gray-800 rounded-xl px-5 py-4">
-          <p className="text-gray-500 text-xs uppercase tracking-wider">Active Critical</p>
-          <p className="text-2xl font-bold text-red-400 mt-1">{activeCritical}</p>
-          <p className="text-gray-600 text-xs mt-0.5">immediate action</p>
+          <p className="text-gray-500 text-xs uppercase tracking-wider">Critical</p>
+          <p className="text-2xl font-bold text-red-400 mt-1">{totalCritical}</p>
+          <p className="text-gray-600 text-xs mt-0.5">all-time</p>
         </div>
         <div className="bg-gray-900 border border-gray-800 rounded-xl px-5 py-4">
-          <p className="text-gray-500 text-xs uppercase tracking-wider">Active High</p>
-          <p className="text-2xl font-bold text-orange-400 mt-1">{activeHigh}</p>
-          <p className="text-gray-600 text-xs mt-0.5">investigate now</p>
+          <p className="text-gray-500 text-xs uppercase tracking-wider">High</p>
+          <p className="text-2xl font-bold text-orange-400 mt-1">{totalHigh}</p>
+          <p className="text-gray-600 text-xs mt-0.5">all-time</p>
         </div>
         <div className="bg-gray-900 border border-gray-800 rounded-xl px-5 py-4">
-          <p className="text-gray-500 text-xs uppercase tracking-wider">Total (All-Time)</p>
-          <p className="text-2xl font-bold text-gray-400 mt-1">{alerts.length}</p>
-          <p className="text-gray-600 text-xs mt-0.5">incl. acknowledged</p>
+          <p className="text-gray-500 text-xs uppercase tracking-wider">Unacknowledged</p>
+          <p className="text-2xl font-bold text-gray-400 mt-1">{alerts.filter(a => !a.acknowledged).length}</p>
+          <p className="text-gray-600 text-xs mt-0.5">still open</p>
         </div>
       </div>
 

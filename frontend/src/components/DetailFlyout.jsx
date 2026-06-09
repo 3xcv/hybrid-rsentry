@@ -31,13 +31,15 @@ export default function DetailFlyout({ alert, liveEvent, liveAiResult, onClose, 
   const [evidence, setEvidence] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [containing, setContaining] = useState(false);
+  const [isContained, setIsContained] = useState(false);
   const [acking, setAcking] = useState(false);
   const [fsExpanded, setFsExpanded] = useState(false);
   const [aiResult, setAiResult] = useState(null);
 
   useEffect(() => {
-    if (!alert) { setEvidence(null); setAiResult(null); return; }
+    if (!alert) { setEvidence(null); setIsContained(false); setAiResult(null); return; }
     setEvidence(null);
+    setIsContained(false);
     setAiResult(null);
     setAnalyzing(false);
     const controller = new AbortController();
@@ -47,7 +49,7 @@ export default function DetailFlyout({ alert, liveEvent, liveAiResult, onClose, 
     return () => controller.abort();
   }, [alert?.id]);
 
-  // Update AI result when WebSocket delivers a matching analysis
+  // Match incoming WebSocket AI result to this alert
   useEffect(() => {
     if (!liveAiResult || !alert || liveAiResult.risk_level === 'PENDING') return;
     const matchesEvent = liveAiResult.event_id && liveAiResult.event_id === String(alert.event_id);
@@ -83,14 +85,22 @@ export default function DetailFlyout({ alert, liveEvent, liveAiResult, onClose, 
     setAnalyzing(true);
     try {
       await analyzeAlert(alert.id);
-      // Keep analyzing=true — spinner stays until liveAiResult arrives via WebSocket
+      // spinner stays until liveAiResult arrives via WebSocket
     } catch {
       setAnalyzing(false);
     }
   }
   async function handleContain() {
     setContaining(true);
-    try { await containHost(alert.host_id); onRefresh?.(); } catch {} finally { setContaining(false); }
+    try {
+      await containHost(alert.host_id);
+      setIsContained(true);
+      onRefresh?.();
+    } catch (err) {
+      console.error('Containment failed:', err.response?.data?.detail || err.message);
+    } finally {
+      setContaining(false);
+    }
   }
 
   const rawJson = JSON.stringify({
@@ -136,20 +146,27 @@ export default function DetailFlyout({ alert, liveEvent, liveAiResult, onClose, 
 
       {/* Actions */}
       <div style={{ display: 'flex', gap: 8, padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <button className="siem-dt-btn danger" onClick={handleContain} disabled={containing}>
+        <button
+          className={`siem-dt-btn ${isContained ? '' : 'danger'}`}
+          onClick={handleContain}
+          disabled={containing || isContained}
+        >
           <i className="fa-solid fa-plug-circle-xmark" style={{ fontSize: 11 }} />
-          {containing ? 'Isolating…' : 'Isolate host'}
+          {isContained ? 'Isolated ✓' : containing ? 'Isolating…' : 'Isolate host'}
         </button>
         <button className="siem-dt-btn" onClick={handleAnalyze} disabled={analyzing}>
           <i className="fa-solid fa-brain" style={{ fontSize: 11 }} />
           {analyzing ? 'Analyzing…' : 'AI Analyze'}
         </button>
-        {!alert.acknowledged && (
-          <button className="siem-dt-btn" onClick={handleAck} disabled={acking}>
-            <i className="fa-solid fa-check" style={{ fontSize: 11 }} />
-            {acking ? '…' : 'ACK'}
-          </button>
-        )}
+        <button
+          className="siem-dt-btn"
+          onClick={!alert.acknowledged ? handleAck : undefined}
+          disabled={acking || alert.acknowledged}
+          style={alert.acknowledged ? { opacity: 0.5, cursor: 'default' } : {}}
+        >
+          <i className={`fa-solid ${alert.acknowledged ? 'fa-check-double' : 'fa-check'}`} style={{ fontSize: 11 }} />
+          {alert.acknowledged ? 'Acknowledged' : acking ? '…' : 'ACK'}
+        </button>
       </div>
 
       {/* Scrollable body */}
@@ -166,14 +183,9 @@ export default function DetailFlyout({ alert, liveEvent, liveAiResult, onClose, 
           <div style={{ fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-2)' }}>
             {ai?.behavior_summary || ai?.summary || (ev ? `${ev.event_type} detected on ${alert.host_id}` : 'No summary available.')}
           </div>
-          {ai?.risk_level && ai.risk_level !== 'PENDING' && (
+          {ai?.risk_level && (
             <div style={{ marginTop: 8, fontSize: 11, fontFamily: 'var(--mono)', color: SEV_COLOR[ai.risk_level] || 'var(--text-2)' }}>
-              AI Risk: {ai.risk_level} · {ai.threat_type}
-            </div>
-          )}
-          {ai?.recommendation && (
-            <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--text-2)' }}>
-              <span style={{ color: 'var(--accent)' }}>Rec:</span> {ai.recommendation}
+              AI Risk: {ai.risk_level}
             </div>
           )}
           {ai?.recommendations?.length > 0 && (

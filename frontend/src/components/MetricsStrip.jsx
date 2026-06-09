@@ -20,10 +20,10 @@ function Metric({ label, value, trend, color, sq }) {
 }
 
 export default function MetricsStrip({ alerts, events }) {
-  const open      = alerts.filter(a => !a.acknowledged).length;
-  const critical  = alerts.filter(a => !a.acknowledged && a.severity === 'CRITICAL').length;
-  const high      = alerts.filter(a => !a.acknowledged && a.severity === 'HIGH').length;
-  const hosts     = new Set(alerts.filter(a => !a.acknowledged).map(a => a.host_id)).size;
+  const open      = alerts.length;
+  const critical  = alerts.filter(a => a.severity === 'CRITICAL').length;
+  const high      = alerts.filter(a => a.severity === 'HIGH').length;
+  const hosts     = new Set(alerts.map(a => a.host_id)).size;
 
   const recentMs  = 60 * 60 * 1000;
   const cutoff    = Date.now() - recentMs;
@@ -34,7 +34,7 @@ export default function MetricsStrip({ alerts, events }) {
 
   return (
     <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', background: 'var(--panel)', flexShrink: 0 }}>
-      <Metric label="Open alerts"    value={open}     trend={open > 0 ? `${open} unacknowledged` : 'All clear'} />
+      <Metric label="Total alerts"    value={open}     trend={open > 0 ? `${open} total` : 'None yet'} />
       <Metric label="Critical"       value={critical} color={critical > 0 ? 'var(--crit)' : undefined} sq="var(--crit)" trend={critical > 0 ? '▲ active' : 'none'} />
       <Metric label="High"           value={high}     color={high > 0 ? 'var(--high)' : undefined} sq="var(--high)" trend={high > 0 ? '▲ active' : 'none'} />
       <Metric label="Hosts affected" value={hosts}    trend={`of monitored`} />
