@@ -121,13 +121,13 @@ When watchdog detects the file moves (pid=0, sub_type="moved"), `events.py` reco
 
 ## AI analysis paths
 
-Two separate NVIDIA API keys to avoid rate limit cross-blocking:
+Two separate API keys to avoid rate limit cross-blocking (each key uses Cerebras → NVIDIA → Groq fallback):
 
 | Path | Key | Task | When triggered |
 |---|---|---|---|
-| Live event analysis | `NVIDIA_API_KEY` | `analyze_event_ai` | Every CRITICAL/HIGH/MEDIUM event |
-| On-demand analysis | `NVIDIA_API_KEY_ALERTS` | `analyze_alert_ai` | User clicks "AI Analyze" on Alerts page |
-| Health check | `NVIDIA_API_KEY` | `analyze_health_ai` | User clicks "Run System Health Check" |
+| Live event analysis | `AI_API_KEY` (alias `NVIDIA_API_KEY`) | `analyze_event_ai` | Every CRITICAL/HIGH/MEDIUM event |
+| On-demand analysis | `AI_API_KEY_ALERTS` (alias `NVIDIA_API_KEY_ALERTS`) | `analyze_alert_ai` | User clicks "AI Analyze" on Alerts page |
+| Health check | `AI_API_KEY` | `analyze_health_ai` | User clicks "Run System Health Check" |
 
 ---
 
