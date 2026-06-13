@@ -83,7 +83,7 @@ class FilesystemGraph:
                         queue.append(e)
         return dirs
 
-    def place_canaries(self, strategy: str = "bfs") -> list[Path]:
+    def place_canaries(self) -> list[Path]:
         """Place CANARY_COUNT canary files spread across the directory tree."""
         self._cleanup_old_canaries()
         dirs = self._bfs_dirs() or [self.root]
