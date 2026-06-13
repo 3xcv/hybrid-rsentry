@@ -467,7 +467,7 @@ class Monitor:
 
         if FilesystemGraph:
             self.fs_graph = FilesystemGraph(root=watch_path)
-            canaries      = self.fs_graph.place_canaries(strategy=CANARY_STRATEGY)
+            canaries      = self.fs_graph.place_canaries()
         else:
             self.fs_graph = None
             canaries      = []
