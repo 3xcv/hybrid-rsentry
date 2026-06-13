@@ -4,7 +4,6 @@ ws.py — WebSocket endpoint for live alert push to the dashboard.
 import asyncio
 import json
 import logging
-from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import redis.asyncio as aioredis
