@@ -7,6 +7,7 @@ export const RULE_NAME = {
   CONTAINMENT_COMPLETE:  'Containment Verified',
   MARKOV_REPOSITION:     'Adaptive Canary Reposition',
   HEARTBEAT:             'System Heartbeat',
+  RANSOMWARE_RENAME:     'Ransomware File Extension Rename Detected',
 };
 
 export const MITRE = {
