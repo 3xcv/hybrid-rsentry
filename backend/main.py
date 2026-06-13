@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from backend.models.database import engine
-from backend.routers import events, alerts, hosts, ws, exceptions
+from backend.routers import events, alerts, hosts, ws, exceptions, simulate
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ app.include_router(alerts.router)
 app.include_router(hosts.router)
 app.include_router(ws.router)
 app.include_router(exceptions.router)
+app.include_router(simulate.router)
 
 
 @app.get("/health")
