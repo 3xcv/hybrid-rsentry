@@ -7,6 +7,7 @@ import HostsPage from './pages/HostsPage';
 import ReportsPage from './pages/ReportsPage';
 import FilesystemPage from './pages/FilesystemPage';
 import AIAnalystPage from './pages/AIAnalystPage';
+import ExceptionsPage from './pages/ExceptionsPage';
 import { useWebSocket } from './hooks/useWebSocket';
 
 const AI_EXPIRY_MS = 4 * 60 * 1000;
@@ -139,6 +140,7 @@ export default function App() {
         />
       );
       case 'reports':    return <ReportsPage />;
+      case 'exceptions': return <ExceptionsPage />;
       default:           return <Overview liveAlert={liveAlert} liveEvent={liveEvent} connected={connected} />;
     }
   };

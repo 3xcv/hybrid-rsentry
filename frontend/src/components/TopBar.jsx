@@ -7,6 +7,7 @@ const NAV = [
   { id: 'filesystem', label: 'Detections' },
   { id: 'ai',         label: 'AI Analyst' },
   { id: 'reports',    label: 'Reports' },
+  { id: 'exceptions', label: 'Exceptions' },
 ];
 
 export default function TopBar({ activePage, onNavigate, alertCount, connected }) {
