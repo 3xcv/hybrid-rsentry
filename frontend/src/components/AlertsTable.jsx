@@ -3,7 +3,6 @@ import { RULE_NAME, MITRE } from '../constants/eventTypes';
 
 const SEV_COLOR  = { CRITICAL: 'var(--crit)', HIGH: 'var(--high)', MEDIUM: 'var(--med)', LOW: 'var(--low)' };
 const SEV_BG     = { CRITICAL: 'var(--crit-bg)', HIGH: 'var(--high-bg)', MEDIUM: 'var(--med-bg)', LOW: 'var(--low-bg)' };
-const STATUS_LABEL = { true: 'Acknowledged', false: 'Open' };
 
 function riskColor(r) { return r >= 85 ? 'var(--crit)' : r >= 65 ? 'var(--high)' : r >= 45 ? 'var(--med)' : 'var(--low)'; }
 
