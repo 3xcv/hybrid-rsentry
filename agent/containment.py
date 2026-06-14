@@ -33,6 +33,22 @@ EVIDENCE_BASE = Path("/tmp/rsentry_evidence")
 CGROUP2_ROOT = Path("/sys/fs/cgroup")
 CGROUP_CONTAIN_PREFIX = "rsentry-contain"
 
+# psutil renamed Process.connections() -> Process.net_connections() in 6.0.0
+# (the old name still works but is deprecated). Resolve the available name ONCE
+# at import so evidence capture works on either version. psutil 5.9.x (the venv's
+# version) only has connections(); calling net_connections() there raises
+# AttributeError — the exact bug that silently aborted containment.
+_PSUTIL_CONN_METHOD = (
+    "net_connections" if hasattr(psutil.Process, "net_connections") else "connections"
+)
+
+
+def _proc_connections(proc: "psutil.Process") -> list:
+    """Return a process's network connections via whichever API this psutil
+    exposes (net_connections on >=6.0, connections on <6.0)."""
+    fn = getattr(proc, _PSUTIL_CONN_METHOD, None)
+    return fn() if fn is not None else []
+
 
 class ContainmentResult:
     def __init__(self, pid: int):
@@ -185,24 +201,48 @@ def _capture_evidence(pid: int, output_dir: Optional[Path] = None) -> tuple[Opti
     except (OSError, shutil.Error):
         pass
 
-    # psutil supplementary info
+    # psutil supplementary info — BEST-EFFORT enrichment ONLY. Each accessor is
+    # isolated so a single failure degrades that ONE field to "unavailable" and
+    # NEVER aborts the containment pipeline. This block previously caught only
+    # (NoSuchProcess, AccessDenied); an AttributeError from proc.net_connections()
+    # (psutil <6.0 exposes proc.connections(), not net_connections()) propagated
+    # out, aborting containment AFTER SIGSTOP but BEFORE SIGKILL — a silent,
+    # complete containment failure surfaced by the evaluation harness.
     try:
-        proc = psutil.Process(pid)
+        proc: "Optional[psutil.Process]" = psutil.Process(pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+        logger.warning("evidence: psutil.Process(%d) unavailable: %s", pid, exc)
+        proc = None
+
+    if proc is not None:
+        def _safe(field: str, fn):
+            """Call one psutil accessor; degrade to 'unavailable' on ANY error."""
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001 — never abort containment
+                logger.warning("evidence: %s for PID %d unavailable: %s",
+                               field, pid, exc)
+                return "unavailable"
+
         info = {
-            "name": proc.name(),
-            "exe": proc.exe(),
-            "cmdline": proc.cmdline(),
-            "open_files": [f.path for f in proc.open_files()],
-            "connections": [str(c) for c in proc.net_connections()],
-            "memory_info": proc.memory_info()._asdict(),
-            "cpu_times": proc.cpu_times()._asdict(),
-            "create_time": proc.create_time(),
+            "name": _safe("name", proc.name),
+            "exe": _safe("exe", proc.exe),
+            "cmdline": _safe("cmdline", proc.cmdline),
+            "open_files": _safe("open_files",
+                                lambda: [f.path for f in proc.open_files()]),
+            "connections": _safe("connections",
+                                 lambda: [str(c) for c in _proc_connections(proc)]),
+            "memory_info": _safe("memory_info", lambda: proc.memory_info()._asdict()),
+            "cpu_times": _safe("cpu_times", lambda: proc.cpu_times()._asdict()),
+            "create_time": _safe("create_time", proc.create_time),
         }
-        meta_file = evidence_dir / "psutil_info.txt"
-        meta_file.write_text(str(info))
-        captured.append(str(meta_file))
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        pass
+        try:
+            meta_file = evidence_dir / "psutil_info.txt"
+            meta_file.write_text(str(info))
+            captured.append(str(meta_file))
+        except OSError as exc:
+            logger.warning("evidence: could not write psutil_info for PID %d: %s",
+                           pid, exc)
 
     logger.info("Evidence captured to %s (%d files)", evidence_dir, len(captured))
     return evidence_dir, captured

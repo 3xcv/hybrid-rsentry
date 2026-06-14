@@ -26,6 +26,7 @@ Run modes:
 from __future__ import annotations
 
 import argparse
+import logging
 import math
 import os
 import re
@@ -36,6 +37,8 @@ import time
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # IGNORE_COMMS — never alert or contain these process names
@@ -1338,8 +1341,19 @@ def run_sensor(
             try:
                 _contain(item[0], item[1], item[2] if len(item) > 2 else "unknown")
             except Exception:
-                pass
-            _contain_q.task_done()
+                # FIX: a containment failure must NEVER be silent. The previous
+                # `except Exception: pass` hid a complete containment abort (an
+                # AttributeError in evidence capture) — the PID was SIGSTOP'd but
+                # never isolated or SIGKILL'd, and nothing was logged. Log the
+                # full traceback at ERROR so any future failure is loud.
+                _layer = item[2] if len(item) > 2 else "unknown"
+                logger.exception(
+                    "CONTAINMENT WORKER FAILED for pid=%s comm=%s layer=%s — "
+                    "process may be SIGSTOP'd but NOT contained",
+                    item[0], item[1], _layer,
+                )
+            finally:
+                _contain_q.task_done()
     _ct.Thread(target=_contain_worker, daemon=True).start()
 
     import queue as _sq
