@@ -11,8 +11,9 @@ import simulations.sim_depth as sim_depth
 import simulations.sim_akira as sim_akira
 import simulations.sim_qilin as sim_qilin
 import simulations.sim_lockbit as sim_lockbit
+import simulations.sim_all as sim_all
 
-_ALL_SIMS = [sim_dfs, sim_random, sim_depth, sim_akira, sim_qilin, sim_lockbit]
+_ALL_SIMS = [sim_dfs, sim_random, sim_depth, sim_akira, sim_qilin, sim_lockbit, sim_all]
 _LEGACY_SIMS = [sim_dfs, sim_random, sim_depth]
 _PROD_SIMS = [sim_akira, sim_qilin, sim_lockbit]
 
