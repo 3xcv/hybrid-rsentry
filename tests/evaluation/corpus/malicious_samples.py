@@ -71,6 +71,20 @@ FAMILIES: Dict[str, dict] = {
         # not a fresh corpus zone — see build_workload's special setup.
         "targets_seeded_decoys": True,
     },
+    "writeoffset_only": {
+        # Encrypts an ALREADY high-entropy file IN PLACE with a scattered,
+        # non-sequential write pattern → caught ONLY by the write-offset layer.
+        # No rename/extension change (rename layer silent), no canary, and the
+        # entropy delta is ≈0 (the file was ~8.0 before and after), so the
+        # entropy layer is blind. The necessity-proof workload for the
+        # `-write_offset` ablation (closes the documented gap — write_offset had
+        # no necessity row). The sim self-prefills the seeded corpus file to
+        # ~7.99 entropy, so it needs only ONE file.
+        "sim_module": "simulations.sim_writeoffset",
+        "params": {"max_files": 1, "delay": 0.1},
+        "expected_primary_layer": "write_offset",
+        "comm": "writeoffset-locker",
+    },
 }
 
 _CORPUS_EXTS = (".docx", ".xlsx", ".pdf", ".db", ".jpg", ".vmdk")
