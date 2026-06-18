@@ -48,7 +48,7 @@ WEIGHT_SUSPICIOUS_PARENT = 30
 WEIGHT_SUSPICIOUS_PATH = 25
 WEIGHT_DEEP_ANCESTRY = 15
 WEIGHT_EXE_UNREADABLE = 20
-WEIGHT_NO_TTY = 2  # قللناه لأن معظم background processes بدون TTY
+WEIGHT_NO_TTY = 2  WEIGHT_NO_TTY = 2  # lowered this since most background processes have no TTY
 WEIGHT_RAPID_SPAWN = 5
 
 # Known-good verification (dpkg integrity database)
@@ -202,7 +202,7 @@ def _collect_ancestors(proc: psutil.Process, max_depth: int = 10) -> tuple[list[
                 path = p.exe() or ""
                 names.append(name)
                 paths.append(path)
-                # early exit لو وصلنا لـ benign root process
+                # early exit if we've reached a benign root process
                 if name.lower() in {"systemd", "init"}:
                     break
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -239,9 +239,9 @@ def score_process(pid: int) -> Optional[ProcessLineage]:
         score += WEIGHT_SUSPICIOUS_PARENT
         lineage.reasons.append(f"suspicious_parent:{immediate_parent}")
 
-    # Benign parent reduces score — بس لو مش من suspicious path
+    # Benign parent reduces score — but only if not from a suspicious path
     if immediate_parent.lower() in BENIGN_PARENTS:
-        # لو python3 أو interpreter شغّل شي من /tmp/ ما نخفف الـ score
+        # If python3 or an interpreter ran something from /tmp/, don't reduce the score
         parent_path = lineage.ancestor_paths[0] if lineage.ancestor_paths else ""
         is_from_suspicious_path = any(parent_path.startswith(sp) for sp in SUSPICIOUS_SPAWN_PATHS)
         if not is_from_suspicious_path:
@@ -304,7 +304,7 @@ def score_process(pid: int) -> Optional[ProcessLineage]:
 def score_for_event(pid: int) -> dict:
     lineage = score_process(pid)
     if lineage is None:
-        # الـ process ماتت قبل ما نحللها — هاذا مشبوه بحد ذاته
+        # The process died before we could analyze it — this is suspicious on its own
         logger.warning("PID %d not found — process may have exited after event (suspicious)", pid)
         return {
             "lineage_score": 25.0,  # process exited before analysis — suspicious but not definitive
