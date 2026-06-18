@@ -147,7 +147,7 @@ def update_host_risk(host_id: str):
 def analyze_event_ai(event_id: str, event_data: dict):
     r = _redis()
 
-    # publish فوري للـ dashboard قبل ما ننتظر الـ AI
+    # Publish immediately to the dashboard before waiting for AI
     r.publish("rsentry:ai", json.dumps({
         "type": "ai_analysis",
         "event_id": event_id,
@@ -160,7 +160,7 @@ def analyze_event_ai(event_id: str, event_data: dict):
         "confidence": "—",
     }))
 
-    # بعدين نحلل بالخلفية
+    # Analyze in the background afterward
     result = ai_analyst.analyze_event(event_data)
 
     if result.get("analysis_failed"):
@@ -182,7 +182,7 @@ def analyze_event_ai(event_id: str, event_data: dict):
 def analyze_alert_ai(alert_id: str, event_data: dict):
     r = _redis()
 
-    # publish فوري قبل ما ننتظر الـ AI
+    # Publish immediately before waiting for AI
     pending_payload = {
         "type": "ai_analysis",
         "alert_id": alert_id,
@@ -198,10 +198,10 @@ def analyze_alert_ai(alert_id: str, event_data: dict):
         pending_payload["event_id"] = event_data["event_id"]
     r.publish("rsentry:ai", json.dumps(pending_payload))
 
-    # بعدين نحلل بالخلفية
+    # Analyze in the background afterward
     result = ai_analyst.analyze_alert(event_data)
 
-    # نبعث النتيجة الحقيقية
+    # Publish the real result
     payload = {
         "type": "ai_analysis_update",
         "alert_id": alert_id,
