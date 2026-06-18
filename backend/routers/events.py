@@ -19,8 +19,8 @@ from backend.workers.tasks import (
     analyze_event_ai, auto_ack_containment, publish_markov_analysis,
 )
 
-AUTO_CONTAIN_THRESHOLD_LINEAGE = 70.0  # lineage score عشان يعمل auto contain
-AUTO_CONTAIN_ENTROPY = 3.5             # entropy delta عشان يعمل auto contain
+AUTO_CONTAIN_THRESHOLD_LINEAGE = 70.0 # lineage score threshold required to trigger auto containment
+AUTO_CONTAIN_ENTROPY = 3.5            # entropy delta threshold required to trigger auto containment
 
 router = APIRouter(prefix="/api/events", tags=["events"])
 
@@ -46,10 +46,10 @@ async def ingest_event(payload: EventCreate, db: AsyncSession = Depends(get_db))
 
     # Detect internal Markov chain events before creating alerts
     sub_type = (payload.details or {}).get("sub_type", "")
-    # Internal = Markov repositioner output فقط.
-    # ملاحظة: شُلّ الشرط (sub_type=="moved" and pid==0) لأنه كان bug —
-    # canary on_moved بستخدم نفس sub_type والـ pid دائماً 0، فكان بتم
-    # تصنيفه internal والـ alert ما يصير.
+    # Internal = Markov repositioner output only.
+    # Note: disabled the condition (sub_type=="moved" and pid==0) since it was
+    # a bug — canary on_moved uses the same sub_type and pid is always 0, so
+    # it was being classified as internal and the alert never fired.
     is_internal = sub_type == "MARKOV_REPOSITION"
 
     event = Event(
@@ -89,10 +89,11 @@ async def ingest_event(payload: EventCreate, db: AsyncSession = Depends(get_db))
         payload.canary_hit, payload.process_name, payload.details,
     )
 
-    # Auto containment — لو CRITICAL وفيه canary hit أو lineage عالي
-    # RANSOMWARE_RENAME/CREATED events بطلعوا من monitor.py بـ pid=0 +
-    # lineage_score=0 + entropy_delta=0، فما بطابقوا secondary conditions
-    # العادية — لازم نضيفهم explicit عشان auto-containment يشتغل
+    # Auto containment — if CRITICAL and there's a canary hit or high lineage score
+    # RANSOMWARE_RENAME/CREATED events come from monitor.py with pid=0 +
+    # lineage_score=0 + entropy_delta=0, so they don't match the normal
+    # secondary conditions — they must be added explicitly for
+    # auto-containment to fire
     is_extension_change = sub_type in ("RANSOMWARE_RENAME", "RANSOMWARE_CREATED")
 
     should_contain = (
