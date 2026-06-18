@@ -263,6 +263,7 @@ Open [http://localhost:3000](http://localhost:3000) to access the dashboard.
 | `GROQ_BASE_URL` | No | Groq base URL (default: `https://api.groq.com/openai/v1`) |
 | `GROQ_MODEL` | No | Groq model name (e.g. `llama-3.3-70b-versatile`) |
 | `SENSOR_BACKEND` | No | Override sensor: `ebpf` or `inotify` (auto-detected if unset) |
+| `DRY_RUN` | No | Set to `true` to disable actual containment actions (SIGSTOP, iptables, SIGKILL) — evidence still captured, alerts still created. Safe for testing. |
 *Groq keys are also accepted — auto-detected by the `gsk_` prefix.
 
 ---
@@ -443,7 +444,13 @@ PRs that introduce new false positives on a live Kali system will not be merged.
 
 ## License
 
-This project is licensed under the MIT License — see [LICENSE](LICENSE).
+This project is dual-licensed under your choice of the **MIT License** or the
+**Apache License 2.0**.
+
+- [LICENSE](LICENSE) — MIT License
+- [LICENSE-APACHE](LICENSE-APACHE) — Apache License 2.0
+
+You may use this project under the terms of either license.
 
 ---
 
