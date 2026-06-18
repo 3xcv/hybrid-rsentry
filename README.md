@@ -339,7 +339,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-**182 tests**, 89% coverage across `entropy.py`, `lineage.py`, `adaptive.py`, severity classification, simulation safety, API routers, AI analyst, Celery tasks, and the containment pipeline. All tests are isolated — no live services required.
+**234 tests**, 89% coverage across `entropy.py`, `lineage.py`, `adaptive.py`, severity classification, simulation safety, API routers, AI analyst, Celery tasks, and the containment pipeline. All tests are isolated — no live services required.
 
 Run the LockBit 5.0 evaluation separately:
 ```bash
