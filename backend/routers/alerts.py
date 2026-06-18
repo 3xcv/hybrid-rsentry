@@ -384,7 +384,7 @@ async def forensic_export(alert_id: uuid.UUID, db: AsyncSession = Depends(get_db
     )
     evidence_list = evidence_result.scalars().all()
 
-    # جيب الـ AI analysis من Redis لو موجود
+    # Fetch the AI analysis from Redis if it exists
     from backend.services.ai_analyst import _get_redis
     ai_analysis = None
     try:
