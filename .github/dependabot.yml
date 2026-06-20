@@ -9,6 +9,14 @@ updates:
       - "dependencies"
       - "python"
 
+  # docs/evaluation/requirements-frozen.txt is a pinned evaluation snapshot —
+  # disable Dependabot PRs for it entirely
+  - package-ecosystem: "pip"
+    directory: "/docs/evaluation"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
   # npm dependencies (frontend)
   - package-ecosystem: "npm"
     directory: "/frontend"
